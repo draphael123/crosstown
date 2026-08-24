@@ -150,6 +150,27 @@
   #cardWhy.bad { color:var(--stamp); font-weight:700; }
   #cardWhy.warn { color:var(--amber); }
 
+  /* ------------------------------------------------------------- induction */
+  /* Under the masthead, not above the palette: the palette grew to five rows
+     of tools and the two collided on a short window. */
+  #tutorial { left:16px; top:152px; width:290px; padding:10px 14px 11px 18px; }
+  #tutorial.flash { animation:memo .5s ease-out; }
+  @keyframes memo { from { transform:translateX(-14px) rotate(-1deg); opacity:0; } to { opacity:1; } }
+  #tutNum { font-family:var(--disp); font-size:9px; font-weight:600; letter-spacing:.20em;
+    text-transform:uppercase; color:var(--stamp); }
+  #tutHead { font-family:var(--disp); font-size:16px; font-weight:600; letter-spacing:.12em;
+    text-transform:uppercase; margin-top:1px; }
+  #tutBody { font-size:11px; line-height:1.55; color:var(--ink2); margin-top:5px; }
+  #tutTrack { height:5px; background:rgba(80,68,44,.22); border:1px solid var(--rule); margin-top:8px; }
+  #tutBar { height:100%; width:0; background:var(--green); transition:width .3s; }
+  #tutFoot { display:flex; justify-content:space-between; align-items:center; margin-top:5px; }
+  #tutProg { font-size:9px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink2); }
+  #tutSkip { font-family:var(--disp); font-size:9px; font-weight:600; letter-spacing:.12em;
+    text-transform:uppercase; background:rgba(255,255,255,.32); border:1px solid var(--rule);
+    padding:2px 8px; cursor:pointer; }
+  #tutSkip:hover { background:var(--ink); color:var(--paper); }
+  body.street #tutorial { display:none; }
+
   /* --------------------------------------------------------- district names */
   #labels { position:fixed; inset:0; z-index:5; pointer-events:none; overflow:hidden; }
   .dlab { position:absolute; transform:translate(-50%,-50%); white-space:nowrap;
@@ -313,6 +334,14 @@
   </div>
 
   <div id="help">drag to draw &nbsp;·&nbsp; right-drag or WASD to pan &nbsp;·&nbsp; Q / E rotate &nbsp;·&nbsp; Z / X zoom &nbsp;·&nbsp; 1-0 / letters for tools &nbsp;·&nbsp; Esc menu</div>
+
+  <div id="tutorial" class="paper hide">
+    <div id="tutNum">Memorandum No. 1</div>
+    <div id="tutHead">&mdash;</div>
+    <div id="tutBody">&mdash;</div>
+    <div id="tutTrack"><div id="tutBar"></div></div>
+    <div id="tutFoot"><span id="tutProg">&mdash;</span><button id="tutSkip">Skip</button></div>
+  </div>
 
   <div id="card" class="paper">
     <div id="cardAddr">—</div>

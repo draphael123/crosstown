@@ -4,6 +4,7 @@
 import * as THREE from '../vendor/three.module.js';
 import * as S from './sim.js';
 import { makeAudio } from './audio.js';
+import { makeTutorial } from './tutorial.js';
 
 const { W, H, N, Z, T, idx } = S;
 const TAU = Math.PI * 2;
@@ -34,7 +35,7 @@ function nameFor(seed) {
 }
 
 // ---------------------------------------------------------------- settings
-const DEFAULT_SET = { shadows: 1, scale: 1, haze: 1, smoke: 1, lots: 0, autosave: 1, daynight: 1, sound: 1, traffic: 1 };
+const DEFAULT_SET = { shadows: 1, scale: 1, haze: 1, smoke: 1, lots: 0, autosave: 1, daynight: 1, sound: 1, traffic: 1, tutorial: 1 };
 let SET = { ...DEFAULT_SET };
 try { Object.assign(SET, JSON.parse(localStorage.getItem(LS.settings) || '{}')); } catch { /* first run */ }
 const saveSettings = () => { try { localStorage.setItem(LS.settings, JSON.stringify(SET)); } catch { /* private mode */ } };
@@ -1374,6 +1375,12 @@ function applyWorld() {
 // ------------------------------------------------------------------- audio
 const audio = makeAudio();
 
+// ---------------------------------------------------------------- induction
+// Only ever on a NEW city. Opening a saved one means you have played before,
+// and being told to pave a street over a city of nine thousand is insulting.
+const tutorial = makeTutorial({ onFinish: () => toast('Induction complete') });
+let tutAcc = 0;
+
 // ---------------------------------------------------------------- settings
 const OPTS = [
   { k: 'daynight', lab: 'Day and night', sub: 'The light moves; the year does not' },
@@ -1385,6 +1392,7 @@ const OPTS = [
   { k: 'smoke', lab: 'Stack smoke', sub: 'Plumes from the generating stations' },
   { k: 'lots', lab: 'Lot lines', sub: 'Survey boundaries drawn on zoned land' },
   { k: 'autosave', lab: 'Autosave', sub: 'File the city every minute' },
+  { k: 'tutorial', lab: 'Induction', sub: 'Commission memoranda on a new city' },
 ];
 function applySettings() {
   renderer.shadowMap.enabled = !!SET.shadows;
@@ -1533,6 +1541,7 @@ function toast(msg) {
 
 function enterCity() {
   if (mode === 'street') leaveStreet();
+  tutorial.stop();
   applyWorld();
   document.getElementById('mastName').textContent = current.name;
   document.title = 'CROSSTOWN — ' + current.name;
@@ -1551,6 +1560,7 @@ function startNew(name, seed) {
   S.stepCity(city);
   current = { slotId: null, name };
   enterCity();
+  if (SET.tutorial) tutorial.start(city); else tutorial.stop();
 }
 function showTitle() {
   if (mode === 'street') leaveStreet();
@@ -1910,6 +1920,7 @@ document.getElementById('zoomIn').onclick = () => setZoom(view.zoom - 1);
 document.getElementById('zoomOut').onclick = () => setZoom(view.zoom + 1);
 document.getElementById('streetBtn').onclick = () => (mode === 'iso' ? enterStreet() : leaveStreet());
 document.getElementById('rideBtn').onclick = () => toggleRide();
+document.getElementById('tutSkip').onclick = () => tutorial.skip();
 for (const b of document.querySelectorAll('#ovr button')) b.onclick = () => setOverlay(b.dataset.o);
 
 // ---------------------------------------------------------------- bulletins
@@ -2150,6 +2161,11 @@ function frame(now) {
   stepRising(dt);
   updateLabels();
 
+  if (tutorial.active && active) {
+    tutAcc += dt;
+    if (tutAcc > 0.4) { tutorial.tick(city, tutAcc); tutAcc = 0; }
+  }
+
   hudAcc += dt;
   if (hudAcc > 0.12) {
     updateHUD();
@@ -2193,7 +2209,7 @@ window.CROSSTOWN = {
     return city.pop;
   },
   refresh: () => { applyWorld(); updateHUD(); },
-  startNew, showTitle, saveCity, loadCity, listSlots, setOverlay, audio, SET,
+  startNew, showTitle, saveCity, loadCity, listSlots, setOverlay, audio, SET, tutorial,
   enterStreet, leaveStreet, toggleRide, setZoom, get mode() { return mode; },
   get view() { return view; },
   setDay: t => { dayT = t; applyDaylight(); paintSky(true); bldDirty = true; },
