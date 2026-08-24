@@ -7,6 +7,14 @@ American river country and told to make a city of it.
     python CROSSTOWN/serve.py 5825      →  http://localhost:5825
     node test/sim-test.mjs              →  the whole sim, headless
 
+Repo: <https://github.com/draphael123/crosstown>
+Live: <https://crosstown-daniel-8982s-projects.vercel.app>
+
+Two deploy notes. The directory is uppercase, so `vercel` derives an invalid
+project name from it and refuses — deploy with `npx vercel@latest --prod --yes
+--name crosstown`. And `crosstown.vercel.app` belongs to somebody else, so the
+production alias is the longer team-scoped one above.
+
 ## What it is
 
 The distinctiveness rides on setting, art, UI and texture rather than on a
