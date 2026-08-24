@@ -218,7 +218,8 @@ const PAL = {
   water: ['#3c6b88', '#41708c', '#48789a', '#4d7fa0', '#457694', '#3f6d8a'],
   shore: ['#a8a077', '#b0a880', '#9d956d'],
   tree: ['#4e6b41', '#587448', '#47623c'],
-  road: '#54524c', roadLine: '#b9b29a',
+  road: { 1: '#7d6c50', 2: '#54524c', 3: '#5c5a53' },   // dirt / street / boulevard
+  roadLine: '#b9b29a', gravel: '#93815f', median: '#5f7c46', kerb: '#8e897c',
   park: '#5d8348', parkPath: '#a89a76',
   lot: { [Z.R]: '#9aa872', [Z.C]: '#7f96a8', [Z.I]: '#a89a72' },
   plant: '#6a6258', rubble: '#8a8074',
@@ -265,14 +266,32 @@ function paintTile(x, y) {
     return;
   }
 
-  if (city.road[i]) {
-    g.fillStyle = PAL.road; g.fillRect(px, py, GRES, GRES);
-    g.fillStyle = PAL.roadLine;
+  const grade = city.road[i];
+  if (grade) {
+    g.fillStyle = PAL.road[grade]; g.fillRect(px, py, GRES, GRES);
     const c0 = px + (GRES >> 1) - 1, c1 = py + (GRES >> 1) - 1;
-    if (x + 1 < W && city.road[idx(x + 1, y)]) g.fillRect(c0 + 1, c1, GRES >> 1, 1);
-    if (x > 0 && city.road[idx(x - 1, y)]) g.fillRect(px, c1, GRES >> 1, 1);
-    if (y + 1 < H && city.road[idx(x, y + 1)]) g.fillRect(c0, c1 + 1, 1, GRES >> 1);
-    if (y > 0 && city.road[idx(x, y - 1)]) g.fillRect(c0, py, 1, GRES >> 1);
+    const E = x + 1 < W && city.road[idx(x + 1, y)], Wn = x > 0 && city.road[idx(x - 1, y)];
+    const Sn = y + 1 < H && city.road[idx(x, y + 1)], Nn = y > 0 && city.road[idx(x, y - 1)];
+    if (grade === S.ROAD.DIRT) {
+      // No markings on a dirt track — just wheel ruts and loose stone.
+      g.fillStyle = PAL.gravel;
+      if (r < 0.5) g.fillRect(px + 1, py + 2, 1, 1); else g.fillRect(px + 2, py + 1, 1, 1);
+    } else if (grade === S.ROAD.STREET) {
+      g.fillStyle = PAL.roadLine;
+      if (E) g.fillRect(c0 + 1, c1, GRES >> 1, 1);
+      if (Wn) g.fillRect(px, c1, GRES >> 1, 1);
+      if (Sn) g.fillRect(c0, c1 + 1, 1, GRES >> 1);
+      if (Nn) g.fillRect(c0, py, 1, GRES >> 1);
+    } else {
+      // A boulevard reads by its planted median and its kerbs, not by a stripe.
+      g.fillStyle = PAL.kerb;
+      g.fillRect(px, py, GRES, 1); g.fillRect(px, py + GRES - 1, GRES, 1);
+      g.fillRect(px, py, 1, GRES); g.fillRect(px + GRES - 1, py, 1, GRES);
+      g.fillStyle = PAL.median;
+      if (E || Wn) g.fillRect(px, c1, GRES, 1);
+      if (Sn || Nn) g.fillRect(c0, py, 1, GRES);
+      if (!E && !Wn && !Sn && !Nn) g.fillRect(c0, c1, 2, 2);
+    }
     return;
   }
 
@@ -444,6 +463,16 @@ const VARIANTS = {
      () => mergeGeos([box(.84, 1.60, .90), stack(.12, 1.00, -.26, 1.60, .26)])],
   ],
 };
+// A tier-1 dwelling on land below SHACK_LV. Small, flat- or lean-roofed, drab —
+// the whole point is that you can tell the bad ground from the good at a glance
+// instead of having to open the land value sheet.
+const SHACK_VARIANTS = [
+  () => mergeGeos([box(.40, .24, .36), box(.46, .05, .42, .01, .24)]),
+  () => mergeGeos([box(.34, .28, .42), box(.40, .04, .46, -.01, .28), stack(.035, .18, .13, .32, .12)]),
+  () => mergeGeos([box(.44, .20, .30), box(.48, .05, .34, .02, .20)]),
+];
+const TINT_SHACK = ['#8a7f6e', '#7b7263', '#948976', '#6f675a', '#877c68'];
+
 const TINT = {
   [Z.R]: ['#c9b499', '#b9a68c', '#d2c2a6', '#a8917a', '#c2b6a4'],
   [Z.C]: ['#d8d2c2', '#c6c9c6', '#e0dccb', '#b9bfc0', '#cfc8b4'],
@@ -456,17 +485,21 @@ const LIT = { [Z.R]: 0xffd79a, [Z.C]: 0xfff0c4, [Z.I]: 0xffc98a };
 
 const bmat = new THREE.MeshLambertMaterial();
 const flatBuckets = [];
+const mkBucket = list => list.map(make => {
+  const e = { geo: make(), mesh: null, cap: 0, id: flatBuckets.length };
+  flatBuckets.push(e);
+  return e;
+});
 const bucket = {};
 for (const z of [Z.R, Z.C, Z.I]) {
   bucket[z] = [];
-  for (let t = 1; t <= 3; t++) {
-    bucket[z][t] = VARIANTS[z][t - 1].map(make => {
-      const e = { geo: make(), mesh: null, cap: 0, id: flatBuckets.length };
-      flatBuckets.push(e);
-      return e;
-    });
-  }
+  for (let t = 1; t <= 3; t++) bucket[z][t] = mkBucket(VARIANTS[z][t - 1]);
 }
+const shackBucket = mkBucket(SHACK_VARIANTS);
+// One place decides which mesh a lot belongs in, so the counting pass and the
+// filling pass can never disagree about where a building went.
+const bucketFor = (i, z, t) =>
+  (z === Z.R && t === 1 && S.isShack(city, i)) ? shackBucket[variantOf(i)] : bucket[z][t][variantOf(i)];
 function ensureCap(e, need) {
   if (e.mesh && e.cap >= need) return;
   const cap = Math.max(256, 1 << (32 - Math.clz32(Math.max(1, need - 1))));
@@ -498,7 +531,7 @@ function placeTile(i, e, k, scaleY, scaleXZ) {
   _sc.set(scaleXZ, scaleY, scaleXZ);
   _m.compose(_v, _q, _sc);
   e.mesh.setMatrixAt(k, _m);
-  const pal = TINT[z];
+  const pal = (z === Z.R && city.bld[i] === 1 && S.isShack(city, i)) ? TINT_SHACK : TINT[z];
   _col.set(pal[(r * pal.length) | 0]);
   if (!city.powered[i]) _col.multiplyScalar(0.5);
   else if (nightness > 0.15) _col.lerp(_lit.setHex(LIT[z]), Math.min(0.30, nightness * 0.55));
@@ -512,16 +545,29 @@ function rebuildBuildings() {
   for (const i of city._zonedList) {
     const t = city.bld[i], z = city.zone[i];
     if (!t || !z) continue;
-    need[bucket[z][t][variantOf(i)].id]++;
+    need[bucketFor(i, z, t).id]++;
   }
   for (let k = 0; k < flatBuckets.length; k++) ensureCap(flatBuckets[k], need[k]);
 
   slotBucket.fill(-1); slotIndex.fill(-1);
   const n = new Int32Array(flatBuckets.length);
+  let sheds = 0;
   for (const i of city._zonedList) {
     const t = city.bld[i], z = city.zone[i];
     if (!t || !z) continue;
-    const e = bucket[z][t][variantOf(i)];
+    if (z === Z.R && t <= 2 && sheds < 6000 && hash(i + 4242) < 0.45) {
+      const sx = i % W, sy = (i / W) | 0, sr = hash(i + 61);
+      _q.setFromAxisAngle(YAXIS, sr * TAU);
+      _v.set(sx + 0.18 + sr * 0.12, hAt(sx, sy), sy + 0.74 - sr * 0.10);
+      _sc.set(1, 1, 1);
+      _m.compose(_v, _q, _sc);
+      shedMesh.setMatrixAt(sheds, _m);
+      _col.set(SHED_TINT[(sr * SHED_TINT.length) | 0]);
+      if (!city.powered[i]) _col.multiplyScalar(0.5);
+      shedMesh.setColorAt(sheds, _col);
+      sheds++;
+    }
+    const e = bucketFor(i, z, t);
     const k = n[e.id]++;
     if (k >= e.cap) continue;
     slotBucket[i] = e.id; slotIndex[i] = k;
@@ -535,6 +581,10 @@ function rebuildBuildings() {
     e.mesh.instanceMatrix.needsUpdate = true;
     if (e.mesh.instanceColor) e.mesh.instanceColor.needsUpdate = true;
   }
+  shedMesh.count = sheds;
+  shedMesh.instanceMatrix.needsUpdate = true;
+  if (shedMesh.instanceColor) shedMesh.instanceColor.needsUpdate = true;
+  rebuildFarms();
   bldDirty = false;
   litDrawn = nightness;
 }
@@ -580,6 +630,82 @@ function stepRubble(dt) {
     else rubble.set(i, n);
   }
 }
+
+// -------------------------------------------- farmsteads and outbuildings
+// Barns, silos and farmhouses scattered over open ground, so the land you have
+// not zoned yet reads as working farmland rather than as blank space waiting
+// for you. Sites are seeded, so a given tract always has the same farms.
+// A farmstead is a GROUP — barn, silo and house together on neighbouring tiles.
+// Scattering the three types independently produced lone pale specks that read
+// as render artefacts rather than as farms.
+const FARM_GEO = [
+  () => mergeGeos([box(.84, .40, .60), pyr(.62, .32, .40)]),                     // barn
+  () => mergeGeos([stack(.21, .82, 0, 0, 0), box(.36, .08, .36, 0, .82)]),       // silo
+  () => mergeGeos([box(.54, .34, .48), pyr(.42, .26, .34)]),                     // farmhouse
+];
+const FARM_TINT = ['#8d3a2c', '#c2bcab', '#d6cab0'];
+const FARM_CAP = 200;
+const farmMeshes = FARM_GEO.map(make => {
+  const m = new THREE.InstancedMesh(make(), new THREE.MeshLambertMaterial(), FARM_CAP);
+  m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false; m.count = 0;
+  scene.add(m);
+  return m;
+});
+let farmSites = [];
+function computeFarmSites() {
+  farmSites = [];
+  for (let i = 0; i < N; i++) {
+    if (city.terrain[i] !== T.LAND) continue;
+    if (hash(i + 31337) > 0.0026) continue;
+    const x = i % W, y = (i / W) | 0;
+    if (x + 1 >= W || y + 1 >= H) continue;
+    farmSites.push(i);
+  }
+}
+// Claimed ground is no longer a farm — the plough goes when the plat comes.
+const farmFree = i => !city.zone[i] && !city.road[i] && !city.park[i]
+  && !city.plant[i] && city.terrain[i] === T.LAND;
+
+function rebuildFarms() {
+  const n = [0, 0, 0];
+  const put = (k, x, y, salt) => {
+    const m = farmMeshes[k];
+    if (n[k] >= FARM_CAP) return;
+    const r = hash(idx(x, y) + salt);
+    _q.setFromAxisAngle(YAXIS, ((r * 4) | 0) * Math.PI / 2);
+    _v.set(x + 0.5, hAt(x, y), y + 0.5);
+    _sc.set(1, 1, 1);
+    _m.compose(_v, _q, _sc);
+    m.setMatrixAt(n[k], _m);
+    _col.set(FARM_TINT[k]).offsetHSL(0, 0, (hash(idx(x, y) + 5) - 0.5) * 0.10);
+    m.setColorAt(n[k], _col);
+    n[k]++;
+  };
+  for (const i of farmSites) {
+    if (!farmFree(i)) continue;
+    const x = i % W, y = (i / W) | 0;
+    put(0, x, y, 777);                                        // the barn anchors it
+    if (farmFree(idx(x + 1, y))) put(1, x + 1, y, 91);        // silo alongside
+    if (farmFree(idx(x, y + 1))) put(2, x, y + 1, 313);       // house across the yard
+  }
+  farmMeshes.forEach((m, k) => {
+    m.count = n[k];
+    m.instanceMatrix.needsUpdate = true;
+    if (m.instanceColor) m.instanceColor.needsUpdate = true;
+  });
+}
+
+// Sheds and garages beside the low dwellings. Pure texture at close zoom, and
+// it is what stops a street of cottages looking like a row of identical dice.
+const shedMesh = (() => {
+  const m = new THREE.InstancedMesh(
+    mergeGeos([box(.24, .17, .20), pyr(.19, .09, .17)]),
+    new THREE.MeshLambertMaterial(), 6000);
+  m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false; m.count = 0;
+  scene.add(m);
+  return m;
+})();
+const SHED_TINT = ['#9c8f79', '#8a7f6b', '#a8997f', '#7d7362'];
 
 // -------------------------------------------------------------------- trees
 const treeMesh = (() => {
@@ -806,6 +932,16 @@ const cursor = new THREE.Mesh(
   new THREE.BoxGeometry(1, 0.06, 1),
   new THREE.MeshBasicMaterial({ color: 0xfff4d0, transparent: true, opacity: 0.6, depthTest: false })
 );
+// Trees now refuse everything but Raze and Green, and a refusal that shows
+// nothing at all just reads as a broken mouse.
+const CURSOR_OK = 0xfff4d0, CURSOR_NO = 0xd8503c;
+function cursorAllows(x, y) {
+  const i = idx(x, y);
+  if (tool === 'inspect') return true;
+  if (city.terrain[i] === T.WATER) return false;
+  if (city.terrain[i] === T.TREE) return tool === 'bulldoze' || tool === 'park';
+  return true;
+}
 cursor.renderOrder = 5;
 cursor.visible = false;
 scene.add(cursor);
@@ -822,6 +958,7 @@ function applyWorld() {
   roadVer = -1;
   reshapeGround();
   paintAll();
+  computeFarmSites();
   rebuildTrees();
   rebuildPlants();
   rebuildBuildings();
@@ -1026,19 +1163,22 @@ function showTitle() {
 }
 
 // -------------------------------------------------------------------- tools
+const RS = S.ROAD_SPEC;
 const TOOLS = [
-  { id: 'road', k: 'Street', p: '$' + S.COST.road, need: null, sw: '#54524c' },
-  { id: 'line', k: 'Wire', p: '$' + S.COST.line, need: null, sw: '#4b4438' },
-  { id: 'bulldoze', k: 'Raze', p: '$' + S.COST.bulldoze, need: null, sw: '#9e3b2e' },
-  { id: 'zoneR', k: 'Dwelling', p: '$' + S.COST.zone, need: null, sw: '#9aa872' },
-  { id: 'zoneC', k: 'Trade', p: '$' + S.COST.zone, need: null, sw: '#7f96a8' },
-  { id: 'zoneI', k: 'Works', p: '$' + S.COST.zone, need: null, sw: '#a89a72' },
-  { id: 'coal', k: 'Coal Stn', p: '$' + S.PLANTS.coal.cost, need: null, sw: '#6a6258' },
-  { id: 'oil', k: 'Oil Stn', p: '$' + S.PLANTS.oil.cost, need: 'plant_oil', sw: '#7a7469' },
-  { id: 'park', k: 'Green', p: '$' + S.COST.park, need: 'park', sw: '#5d8348' },
-  { id: 'inspect', k: 'Inspect', p: 'free', need: null, sw: '#33488c' },
+  { id: 'dirt', k: 'Dirt', p: '$' + RS[S.ROAD.DIRT].cost, need: null, sw: '#7d6c50', key: '1' },
+  { id: 'street', k: 'Street', p: '$' + RS[S.ROAD.STREET].cost, need: null, sw: '#54524c', key: '2' },
+  { id: 'boulevard', k: 'Blvd', p: '$' + RS[S.ROAD.BOULEVARD].cost, need: null, sw: '#5f7c46', key: '3' },
+  { id: 'line', k: 'Wire', p: '$' + S.COST.line, need: null, sw: '#4b4438', key: '4' },
+  { id: 'bulldoze', k: 'Raze', p: '$' + S.COST.bulldoze + '/' + S.COST.fell, need: null, sw: '#9e3b2e', key: '5' },
+  { id: 'zoneR', k: 'Dwelling', p: '$' + S.COST.zone, need: null, sw: '#9aa872', key: '6' },
+  { id: 'zoneC', k: 'Trade', p: '$' + S.COST.zone, need: null, sw: '#7f96a8', key: '7' },
+  { id: 'zoneI', k: 'Works', p: '$' + S.COST.zone, need: null, sw: '#a89a72', key: '8' },
+  { id: 'coal', k: 'Coal Stn', p: '$' + S.PLANTS.coal.cost, need: null, sw: '#6a6258', key: '9' },
+  { id: 'oil', k: 'Oil Stn', p: '$' + S.PLANTS.oil.cost, need: 'plant_oil', sw: '#7a7469', key: '0' },
+  { id: 'park', k: 'Green', p: '$' + S.COST.park, need: 'park', sw: '#5d8348', key: 'g' },
+  { id: 'inspect', k: 'Inspect', p: 'free', need: null, sw: '#33488c', key: 'v' },
 ];
-let tool = 'road';
+let tool = 'street';
 const toolsEl = document.getElementById('tools');
 TOOLS.forEach((t, n) => {
   const d = document.createElement('div');
@@ -1047,7 +1187,7 @@ TOOLS.forEach((t, n) => {
     <span class="k">${t.k}</span><span class="p">${t.p}</span>`;
   d.onclick = () => { if (!d.classList.contains('locked')) setTool(t.id); };
   toolsEl.appendChild(d);
-  t.el = d; t.hotkey = String((n + 1) % 10);
+  t.el = d; t.hotkey = t.key;
 });
 function setTool(id) {
   tool = id;
@@ -1058,7 +1198,7 @@ function refreshTools() {
   for (const t of TOOLS) {
     const locked = t.need && !city.unlocked.has(t.need);
     t.el.classList.toggle('locked', !!locked);
-    if (locked && tool === t.id) setTool('road');
+    if (locked && tool === t.id) setTool('street');
   }
 }
 // NOT called here: setTool reaches hideCard, whose card element is declared
@@ -1083,19 +1223,25 @@ function showCard(x, y, sx, sy) {
   const rows = [];
   const put = (k, v) => rows.push(`<div class="cr"><span>${k}</span><b>${v}</b></div>`);
   if (city.plant[i]) put('Use', 'Generating station');
-  else if (city.road[i]) put('Use', 'Street');
+  else if (city.road[i]) put('Use', S.ROAD_SPEC[city.road[i]].name);
   else if (city.park[i]) put('Use', 'Public green');
   else if (city.zone[i]) {
     put('Zoned', ZONE_NAME[city.zone[i]]);
     put('Storeys', city.bld[i] || '—');
-    const occ = city.bld[i] ? S.CAP[city.zone[i]][city.bld[i]] : 0;
+    const shack = S.isShack(city, i);
+    if (shack) put('Built as', 'Shack');
+    const occ = !city.bld[i] ? 0
+      : shack ? S.CAP_SHACK : S.CAP[city.zone[i]][city.bld[i]];
     put(city.zone[i] === Z.R ? 'Residents' : 'Jobs', city.powered[i] ? occ : 0);
   } else {
     put('Use', city.terrain[i] === T.WATER ? 'River' : city.terrain[i] === T.TREE ? 'Woodland' : 'Open ground');
+    if (city.terrain[i] === T.TREE) put('To clear', '$' + S.COST.fell);
   }
   if (city.terrain[i] !== T.WATER) {
     put('Land value', VALUE_BAND(city.lv[i]));
-    put('Frontage', city.roadDist[i] === 0 ? 'On the street' : city.roadDist[i] > 4 ? 'None' : city.roadDist[i] + (city.roadDist[i] === 1 ? ' lot away' : ' lots away'));
+    put('Frontage', city.roadDist[i] === 0 ? 'On the road'
+      : !city.served[i] ? 'Out of reach'
+        : city.roadDist[i] + (city.roadDist[i] === 1 ? ' lot away' : ' lots away'));
     put('Current', city.powered[i] ? 'Connected' : 'None');
     if (city.soot[i] > 0.12) put('Smoke', city.soot[i] > 0.34 ? 'Heavy' : 'Some');
   }
@@ -1161,7 +1307,9 @@ function pick(ev) {
 function apply(x, y) {
   let did = false;
   switch (tool) {
-    case 'road': did = S.setRoad(city, x, y); break;
+    case 'dirt': did = S.setRoad(city, x, y, S.ROAD.DIRT); break;
+    case 'street': did = S.setRoad(city, x, y, S.ROAD.STREET); break;
+    case 'boulevard': did = S.setRoad(city, x, y, S.ROAD.BOULEVARD); break;
     case 'line': did = S.setLine(city, x, y); break;
     case 'bulldoze': did = S.bulldoze(city, x, y); break;
     case 'zoneR': did = S.setZone(city, x, y, Z.R); break;
@@ -1208,6 +1356,7 @@ canvas.addEventListener('pointermove', ev => {
   const p = pick(ev);
   if (p) {
     cursor.position.set(p.x + 0.5, hAt(p.x, p.y) + 0.10, p.y + 0.5);
+    cursor.material.color.setHex(cursorAllows(p.x, p.y) ? CURSOR_OK : CURSOR_NO);
     cursor.visible = true;
     if (painting) apply(p.x, p.y);
   } else { cursor.visible = false; }
@@ -1470,7 +1619,7 @@ function markStallChanges() {
 }
 
 // ---------------------------------------------------------------------- go
-setTool('road');
+setTool('street');
 applySettings();
 paintSky(true);
 applyDaylight();

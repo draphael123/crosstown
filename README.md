@@ -43,8 +43,44 @@ or it stays a surveyed rectangle forever:
 Land value decides how *tall* a lot may go; the milestone gate decides the
 ceiling over the whole city. Riverbank and greens lift value, works and coal
 smoke drop it — so a coal station dropped in the middle of a residential
-quarter caps those blocks at one storey, permanently, and nothing tells you
-that but the buildings.
+quarter caps those blocks at one storey, permanently.
+
+**Woodland is an obstacle, not scenery.** Nothing may be built on standing
+trees; fell them with Raze first, at a higher price than scraping a lot. The
+cursor turns red where the tool would be refused. Felling also removes the
+amenity the trees were adding, so clearing a wood costs you twice.
+
+## Three grades of road
+
+The thing you draw most used to be the thing you never made a decision about.
+There is still no traffic model — the cars are decoration — so the trade-off
+runs on the two levers the sim already has: how far back a lot can sit, and
+what the road does to the land beside it.
+
+| | cost | upkeep | frontage reach | land value |
+|---|---|---|---|---|
+| **Dirt track** | $4 | 0.12 | 2 lots | slight penalty |
+| **Street** | $12 | 0.40 | 3 lots | neutral |
+| **Boulevard** | $40 | 1.20 | 4 lots | planted median, bonus |
+
+Measured over one identical town built three times, differing only in grade:
+dirt reaches 2,022 residents, street 5,348, boulevard 8,788. That spread was
+deliberately tuned **down** — at the first numbers the boulevard reached 9,828
+against dirt's 1,329, which is not a trade-off, it is a dominant strategy.
+Boulevard now costs 3.3x a street grid and 3x its upkeep for roughly 1.6x the
+city, which is a decision rather than an answer.
+
+## Shacks
+
+A tier-1 dwelling on land below `SHACK_LV` is built as a shack — smaller, flat-
+or lean-roofed, drab, and housing 3 instead of 8. Without it land value could
+only ever *cap* a lot's height; it could never show in what actually got built,
+and the worst ground in the city looked exactly like the best.
+
+Worth knowing: shacks need bad land **and** live residential demand. A city
+that has reached its equilibrium population will not put up new ones however
+foul the ground, because nobody is looking for housing. They show up while a
+city is growing into ground it has already spoiled.
 
 ## Shell
 
@@ -68,7 +104,10 @@ do nothing at all.
 ## Making it feel alive
 
 Traffic wanders the road graph — no pathfinding, a car just holds two tiles and
-a fraction and picks a neighbour that is not where it came from. Buildings rise
+a fraction and picks a neighbour that is not where it came from. Farmsteads
+(barn, silo and house together, not scattered singly — lone pieces read as
+render artefacts) sit on open ground and disappear when you plat over them.
+Sheds stand beside the low dwellings. Buildings rise
 over about a second instead of appearing, and leave dust on the lot on the way
 down. Cloud shadows drift, the river runs in bands, coal stacks smoke, and the
 light moves through a day while the year stays 1955.
@@ -139,5 +178,5 @@ anything, so it waits until there is one.
     src/sim.js          pure, headless, deterministic — no DOM, no three.js
     src/main.js         renderer, input, HUD
     src/audio.js        synthesised ambience — no assets, nothing to vendor
-    test/sim-test.mjs   47 assertions, positive control first
+    test/sim-test.mjs   71 assertions, positive control first
     vendor/             three.js, vendored — a CDN import map is a dead screen

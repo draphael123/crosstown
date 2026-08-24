@@ -8,6 +8,7 @@
 import {
   makeCity, sim, setRoad, setLine, setZone, placePlant, bulldoze,
   tierCeiling, serialize, deserialize, computeDistricts, idx, Z, T, W, H, N, MILESTONES, STALL,
+  ROAD, ROAD_SPEC, SHACK_LV, CAP_SHACK, isShack, COST,
 } from '../src/sim.js';
 
 let failures = 0;
@@ -44,13 +45,18 @@ function findSite(c, size) {
 
 // A gridiron: avenues every 4 rows, one spine road, lots between them.
 // zoneOf(col,row) decides what each lot becomes, so one call builds a mixed town.
-function buildTown(c, site, zoneOf, { roads = true, plants = 4 } = {}) {
+function buildTown(c, site, zoneOf, { roads = true, plants = 4, grade = ROAD.STREET } = {}) {
   const { x: x0, y: y0, px, size } = site;
   c.funds = 1e9;
+  // Trees block construction now, so the town clears its site first — exactly
+  // what a player has to do.
+  for (let y = y0 - 1; y < y0 + size + 1; y++)
+    for (let x = px; x < x0 + size + 1; x++)
+      if (x >= 0 && y >= 0 && x < W && y < H && c.terrain[idx(x, y)] === T.TREE) bulldoze(c, x, y);
   if (roads) {
     for (let y = y0; y < y0 + size; y += 4)
-      for (let x = x0; x < x0 + size; x++) setRoad(c, x, y);
-    for (let y = y0; y < y0 + size; y++) setRoad(c, x0, y);
+      for (let x = x0; x < x0 + size; x++) setRoad(c, x, y, grade);
+    for (let y = y0; y < y0 + size; y++) setRoad(c, x0, y, grade);
   }
   for (let y = y0; y < y0 + size; y++)
     for (let x = x0 + 1; x < x0 + size; x++) {
@@ -66,6 +72,12 @@ function buildTown(c, site, zoneOf, { roads = true, plants = 4 } = {}) {
   c.funds = 1e9;
   return c;
 }
+// findDry only guarantees no WATER. Trees now block construction, so any
+// fixture building on raw ground has to fell its site first.
+const clearWood = (c, x0, y0, w, h) => {
+  for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++)
+    if (x >= 0 && y >= 0 && x < W && y < H && c.terrain[idx(x, y)] === T.TREE) bulldoze(c, x, y);
+};
 const razeAllPlants = c => { while (c.plants.length) { const p = c.plants[0]; bulldoze(c, p.x, p.y); } };
 
 const thirds = size => cx => cx < size / 3 ? Z.R : cx < 2 * size / 3 ? Z.C : Z.I;
@@ -104,6 +116,7 @@ head('3. lots with no frontage build nothing, even with power');
   const C = makeCity(1955);
   const p = findDry(C, 30);
   C.funds = 1e9;
+  clearWood(C, p.x, p.y, 20, 20);
   // A solid zoned field, no roads at all, and a plant right in it so current is
   // available — frontage is the only thing missing.
   for (let y = p.y; y < p.y + 20; y++) for (let x = p.x; x < p.x + 20; x++) setZone(C, x, y, Z.R);
@@ -299,6 +312,7 @@ head('11. stall reasons — each failing rule reports itself, not silence');
   const P1 = makeCity(1955);
   const a = findDry(P1, 24);
   P1.funds = 1e9;
+  clearWood(P1, a.x, a.y, 14, 14);
   for (let y = a.y; y < a.y + 14; y++) for (let x = a.x; x < a.x + 14; x++) setZone(P1, x, y, Z.R);
   placePlant(P1, a.x + 6, a.y + 6, 'coal');
   sim(P1, 30);
@@ -366,6 +380,110 @@ head('12. districts — a grown town names its parts, and the names hold still')
   const after = computeDistricts(D2).map(d => d.name).sort().join('|');
   console.log(`        after 200 more ticks: ${after === before ? 'unchanged' : after}`);
   ok(after === before, 'the names are the same 200 ticks later');
+}
+
+// ================================= 13. the road grade you buy actually matters
+head('13. road grades — reach, cost and land value all differ');
+{
+  // Frontage reach, measured directly: one road tile, count the lots served.
+  const reachOf = grade => {
+    const c = makeCity(1955);
+    const p = findDry(c, 20);
+    c.funds = 1e9;
+    clearWood(c, p.x, p.y, 14, 14);
+    setRoad(c, p.x + 6, p.y + 6, grade);
+    sim(c, 2);
+    let far = 0;
+    for (let d = 1; d <= 5; d++) if (c.served[idx(p.x + 6 + d, p.y + 6)]) far = d;
+    return far;
+  };
+  const rd = reachOf(ROAD.DIRT), rs = reachOf(ROAD.STREET), rb = reachOf(ROAD.BOULEVARD);
+  console.log(`        reach — dirt ${rd}  street ${rs}  boulevard ${rb}`);
+  ok(rd === 2 && rs === 3 && rb === 4, 'each grade reaches exactly its spec', `${rd}/${rs}/${rb}`);
+  ok(ROAD_SPEC[ROAD.DIRT].cost < ROAD_SPEC[ROAD.STREET].cost
+    && ROAD_SPEC[ROAD.STREET].cost < ROAD_SPEC[ROAD.BOULEVARD].cost, 'and costs rise with it');
+
+  // Land value: the same town twice, differing only in the grade of its roads.
+  const valueOf = grade => {
+    const c = makeCity(1955);
+    const st = findSite(c, 24);
+    buildTown(c, st, thirds(24), { grade });
+    sim(c, 320);
+    let t = 0, n = 0;
+    for (let y = st.y; y < st.y + 24; y++) for (let x = st.x; x < st.x + 24; x++) { t += c.lv[idx(x, y)]; n++; }
+    return { lv: t / n, pop: c.pop.res };
+  };
+  const vd = valueOf(ROAD.DIRT), vs = valueOf(ROAD.STREET), vb = valueOf(ROAD.BOULEVARD);
+  for (const [n, v] of [['dirt', vd], ['street', vs], ['boulevard', vb]])
+    console.log(`        ${n.padEnd(10)} lv ${v.lv.toFixed(3)}  pop ${String(v.pop).padStart(6)}`);
+  ok(vd.lv < vs.lv && vs.lv < vb.lv, 'land value rises with the grade',
+    `${vd.lv.toFixed(3)} / ${vs.lv.toFixed(3)} / ${vb.lv.toFixed(3)}`);
+  ok(vd.pop < vs.pop && vs.pop < vb.pop, 'and so does population',
+    `${vd.pop} / ${vs.pop} / ${vb.pop}`);
+  // The point of a trade-off is that the dear one does not simply win. Paving
+  // everything in boulevard costs 3.3x a street grid and 3x its upkeep, so the
+  // payoff has to stay in the same order of magnitude or there is no decision.
+  ok(vb.pop < vs.pop * 2.2, 'boulevard beats street without dominating it',
+    `${vs.pop} -> ${vb.pop}`);
+  ok(vd.pop > 400, 'and dirt is a compromise, not a dead end', `${vd.pop}`);
+}
+
+// =============================== 14. woodland is an obstacle, and it can be cut
+head('14. trees block construction until they are felled');
+{
+  const F3 = makeCity(1955);
+  F3.funds = 1e9;
+  let wood = -1;
+  for (let i = 0; i < N; i++) if (F3.terrain[i] === T.TREE) { wood = i; break; }
+  ok(wood >= 0, 'the map generated some woodland to test against');
+  const wx = wood % W, wy = (wood / W) | 0;
+
+  ok(!setRoad(F3, wx, wy, ROAD.STREET), 'no street may be laid through standing trees');
+  ok(!setZone(F3, wx, wy, Z.R), 'no lot may be zoned on standing trees');
+  ok(!placePlant(F3, wx, wy, 'coal'), 'no plant may be sited on standing trees');
+  ok(F3.terrain[wood] === T.TREE, 'and the refusals left the trees standing');
+
+  const before = F3.funds;
+  ok(bulldoze(F3, wx, wy), 'razing fells them');
+  ok(before - F3.funds === COST.fell, 'and felling is charged at its own rate',
+    `paid ${before - F3.funds}`);
+  ok(F3.terrain[wood] === T.LAND, 'the tile is now open ground');
+  ok(setRoad(F3, wx, wy, ROAD.STREET), 'and the street can be laid');
+}
+
+// ==================================== 15. bad ground builds shacks, not cottages
+head('15. shacks — poor land shows in WHAT is built, not only how tall');
+{
+  // A works quarter with its own coal station in the middle of it: soot drives
+  // land value through the floor. Then zone dwellings right in the muck.
+  const G3 = makeCity(1955);
+  const st = findSite(G3, 26);
+  buildTown(G3, st, () => Z.I, { grade: ROAD.DIRT });
+  placePlant(G3, st.x + 12, st.y + 8, 'coal');
+  sim(G3, 250);
+  G3.funds = 1e9;
+  for (let y = st.y + 4; y < st.y + 12; y++)
+    for (let x = st.x + 8; x < st.x + 16; x++) setZone(G3, x, y, Z.R);
+  sim(G3, 250);
+
+  let shacks = 0, cottages = 0, minLv = 1;
+  for (const i of G3._zonedList) {
+    if (G3.zone[i] !== Z.R || G3.bld[i] !== 1) continue;
+    minLv = Math.min(minLv, G3.lv[i]);
+    if (isShack(G3, i)) shacks++; else cottages++;
+  }
+  console.log(`        tier-1 dwellings in the works: ${shacks} shacks, ${cottages} cottages`);
+  console.log(`        lowest land value there ${minLv.toFixed(3)} (shack threshold ${SHACK_LV})`);
+  ok(shacks > 0, 'the worst ground built shacks', `n=${shacks}`);
+  ok(CAP_SHACK < 8, 'and a shack houses fewer people than a cottage', `${CAP_SHACK} vs 8`);
+
+  // On decent ground the same tier is a cottage and never a shack.
+  const H3 = makeCity(1955);
+  buildTown(H3, findSite(H3, 24), allR);
+  sim(H3, 200);
+  let badOnGood = 0;
+  for (const i of H3._zonedList) if (isShack(H3, i)) badOnGood++;
+  ok(badOnGood === 0, 'and a clean residential town builds no shacks at all', `n=${badOnGood}`);
 }
 
 console.log('\n' + (failures ? `${failures} FAILED` : 'all passed'));

@@ -14,7 +14,7 @@ export const T = { LAND: 0, WATER: 1, TREE: 2 };
 // and the player has no way to tell those apart.
 export const STALL = {
   OK: 0,          // growing, or about to
-  NO_ROAD: 1,     // no frontage within ROAD_REACH
+  NO_ROAD: 1,     // no frontage within its road grade's reach
   NO_POWER: 2,    // current does not reach it
   NO_DEMAND: 3,   // nobody wants this kind of building right now
   CAPPED: 4,      // as tall as this land value allows — raise the value
@@ -63,9 +63,26 @@ export const PLANTS = {
   oil: { supply: 4400, cost: 6500, upkeep: 190, soot: 0.55, w: 2, h: 2 },
 };
 
-export const COST = { road: 12, line: 6, zone: 30, park: 140, bulldoze: 4 };
+export const COST = { line: 6, zone: 30, park: 140, bulldoze: 4, fell: 9 };
 
-const ROAD_REACH = 3;       // tiles a lot may sit from pavement and still build
+// Three grades of road, trading money against how far back a lot can sit from
+// them and what they do to the land either side. No traffic model is involved:
+// the decision is frontage reach and land value, both of which the sim already
+// runs on.
+export const ROAD = { NONE: 0, DIRT: 1, STREET: 2, BOULEVARD: 3 };
+export const ROAD_SPEC = {
+  [ROAD.DIRT]: { key: 'dirt', name: 'Dirt track', cost: 4, upkeep: 0.12, reach: 2 },
+  [ROAD.STREET]: { key: 'street', name: 'Street', cost: 12, upkeep: 0.40, reach: 3 },
+  [ROAD.BOULEVARD]: { key: 'boulevard', name: 'Boulevard', cost: 40, upkeep: 1.20, reach: 4 },
+};
+const MAX_REACH = 4;        // the widest reach any grade has
+
+// A tier-1 dwelling on genuinely bad ground is a shack, not a cottage. Without
+// this, land value can only ever CAP a lot's height — it can never show in what
+// actually gets built, and the worst land in the city looks like the best.
+export const SHACK_LV = 0.28;
+export const CAP_SHACK = 3;
+export const isShack = (c, i) => c.zone[i] === Z.R && c.bld[i] === 1 && c.lv[i] < SHACK_LV;
 const GROWTH_SAMPLES = 220; // zoned tiles considered per tick
 const LV_EVERY = 4;         // ticks between land-value recomputes
 const QUARTER = 12;         // ticks per budget quarter
@@ -161,6 +178,8 @@ export function makeCity(seed = 1955) {
     bld: new Uint8Array(N),     // tier 0..3
     plant: new Uint8Array(N),   // 1 = coal footprint, 2 = oil footprint
     powered: new Uint8Array(N),
+    served: new Uint8Array(N),      // within its road's reach, whatever grade
+    reachRem: new Int8Array(N),     // scratch for the reach relaxation
     stall: new Uint8Array(N),
     districts: [],
     districtOf: new Uint8Array(N),   // 0 = none, else index into districts + 1
@@ -192,7 +211,7 @@ export function makeCity(seed = 1955) {
 // encoding takes a 25,600-tile map down to a few hundred pairs. Elevation is a
 // pure function of the seed and is never saved; terrain IS saved, because
 // razing a wood mutates it.
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 const GRIDS = ['terrain', 'zone', 'road', 'line', 'park', 'bld', 'plant'];
 
 function rle(a) {
@@ -231,9 +250,12 @@ export function serialize(c, name) {
 }
 
 export function deserialize(o) {
-  if (!o || o.v !== SAVE_VERSION) return null;
+  if (!o || (o.v !== SAVE_VERSION && o.v !== 1)) return null;
   const c = makeCity(o.seed);
   for (const g of GRIDS) c[g] = unrle(o[g], N);
+  // v1 stored roads as a plain 1/0 flag. Left alone those all read as DIRT and
+  // an old city would silently lose a tile of frontage everywhere.
+  if (o.v === 1) for (let i = 0; i < N; i++) if (c.road[i]) c.road[i] = ROAD.STREET;
   c.t = o.t; c.funds = o.funds; c.taxRate = o.taxRate;
   c.rank = o.rank; c.maxTier = o.maxTier; c.randState = o.randState >>> 0;
   c.demand = { ...o.demand };
@@ -249,17 +271,23 @@ export function deserialize(o) {
 }
 
 // ------------------------------------------------------------- player edits
-const buildable = (c, i) => c.terrain[i] !== T.WATER && !c.plant[i];
+// Woodland is an obstacle now, not scenery that quietly evaporates under the
+// first thing you draw. Fell it with Raze and then build. Parks are the one
+// exception — laying a green over standing trees is not clearing the land for
+// construction, it is the point of a green.
+const buildable = (c, i) => c.terrain[i] !== T.WATER && c.terrain[i] !== T.TREE && !c.plant[i];
+const buildableForPark = (c, i) => c.terrain[i] !== T.WATER && !c.plant[i];
 
 export function spend(c, n) { if (c.funds < n) return false; c.funds -= n; return true; }
 
-export function setRoad(c, x, y) {
+export function setRoad(c, x, y, grade = ROAD.STREET) {
   if (!inBounds(x, y)) return false;
+  const spec = ROAD_SPEC[grade];
+  if (!spec) return false;
   const i = idx(x, y);
-  if (c.road[i] || !buildable(c, i)) return false;
-  if (!spend(c, COST.road)) return false;
-  c.road[i] = 1; c.zone[i] = Z.NONE; c.bld[i] = 0; c.park[i] = 0;
-  if (c.terrain[i] === T.TREE) c.terrain[i] = T.LAND;
+  if (c.road[i] === grade || !buildable(c, i)) return false;
+  if (!spend(c, spec.cost)) return false;          // regrading costs the full price
+  c.road[i] = grade; c.zone[i] = Z.NONE; c.bld[i] = 0; c.park[i] = 0;
   c.dirtyRoads = true; c.dirtyZones = true;
   return true;
 }
@@ -279,7 +307,6 @@ export function setZone(c, x, y, z) {
   if (c.road[i] || !buildable(c, i) || c.zone[i] === z) return false;
   if (!spend(c, COST.zone)) return false;
   c.zone[i] = z; c.bld[i] = 0; c.park[i] = 0;
-  if (c.terrain[i] === T.TREE) c.terrain[i] = T.LAND;   // lots get cleared
   c.dirtyZones = true;
   return true;
 }
@@ -287,9 +314,10 @@ export function setZone(c, x, y, z) {
 export function setPark(c, x, y) {
   if (!inBounds(x, y) || !c.unlocked.has('park')) return false;
   const i = idx(x, y);
-  if (c.park[i] || c.road[i] || !buildable(c, i)) return false;
+  if (c.park[i] || c.road[i] || !buildableForPark(c, i)) return false;
   if (!spend(c, COST.park)) return false;
   c.park[i] = 1; c.zone[i] = Z.NONE; c.bld[i] = 0;
+  if (c.terrain[i] === T.TREE) c.terrain[i] = T.LAND;   // the green replaces the wood
   c.dirtyZones = true;
   return true;
 }
@@ -309,7 +337,6 @@ export function placePlant(c, x, y, kind = 'coal') {
     const i = idx(x + dx, y + dy);
     c.plant[i] = mark; c.zone[i] = Z.NONE; c.bld[i] = 0;
     c.line[i] = 0; c.park[i] = 0;
-    if (c.terrain[i] === T.TREE) c.terrain[i] = T.LAND;
   }
   c.plants.push({ x, y, kind });
   c.dirtyZones = true;
@@ -331,9 +358,10 @@ export function bulldoze(c, x, y) {
     c.plants.splice(k, 1);
     return true;
   }
-  const something = c.road[i] || c.line[i] || c.zone[i] || c.park[i] || c.terrain[i] === T.TREE;
+  const wood = c.terrain[i] === T.TREE;
+  const something = c.road[i] || c.line[i] || c.zone[i] || c.park[i] || wood;
   if (!something) return false;
-  if (!spend(c, COST.bulldoze)) return false;
+  if (!spend(c, wood ? COST.fell : COST.bulldoze)) return false;
   if (c.road[i]) c.dirtyRoads = true;
   c.road[i] = 0; c.line[i] = 0; c.zone[i] = Z.NONE; c.bld[i] = 0; c.park[i] = 0;
   if (c.terrain[i] === T.TREE) c.terrain[i] = T.LAND;
@@ -342,27 +370,40 @@ export function bulldoze(c, x, y) {
 }
 
 // ------------------------------------------------------------ road distance
-// Multi-source BFS out from every paved tile, capped at ROAD_REACH. A lot
-// beyond that has no frontage and will never build, however good the land.
+// Each grade reaches a different distance, so this is not a plain BFS: every
+// road tile starts with its own budget of remaining reach and a lot is served
+// if ANY road still has budget left when it gets there. `roadDist` stays the
+// plain hop count, which is what land value and the index card want.
 function recomputeRoadDist(c) {
   const d = c.roadDist; d.fill(255);
+  const rem = c.reachRem; rem.fill(-1);
   let frontier = [];
-  for (let i = 0; i < N; i++) if (c.road[i]) { d[i] = 0; frontier.push(i); }
-  for (let step = 1; step <= ROAD_REACH && frontier.length; step++) {
+  for (let i = 0; i < N; i++) {
+    if (!c.road[i]) continue;
+    d[i] = 0; rem[i] = ROAD_SPEC[c.road[i]].reach; frontier.push(i);
+  }
+  for (let step = 1; step <= MAX_REACH && frontier.length; step++) {
     const next = [];
     for (const i of frontier) {
+      const budget = rem[i] - 1;
+      if (budget < 0) continue;
       const x = i % W, y = (i / W) | 0;
       for (let k = 0; k < 4; k++) {
         const nx = x + (k === 0 ? 1 : k === 1 ? -1 : 0);
         const ny = y + (k === 2 ? 1 : k === 3 ? -1 : 0);
         if (!inBounds(nx, ny)) continue;
         const j = idx(nx, ny);
-        if (d[j] !== 255 || c.terrain[j] === T.WATER) continue;
-        d[j] = step; next.push(j);
+        if (c.terrain[j] === T.WATER || c.road[j]) continue;
+        let touched = false;
+        if (d[j] === 255) { d[j] = step; touched = true; }
+        if (budget > rem[j]) { rem[j] = budget; touched = true; }
+        if (touched) next.push(j);
       }
     }
     frontier = next;
   }
+  const srv = c.served;
+  for (let i = 0; i < N; i++) srv[i] = rem[i] >= 0 ? 1 : 0;
   c.dirtyRoads = false;
   // Bumped rather than flagged: anything downstream that caches the road graph
   // can compare a number it owns instead of trusting every caller to have set a
@@ -440,6 +481,11 @@ function recomputeLandValue(c) {
     if (c.park[i]) amen[ci] += 0.55;
     if (c.zone[i] === Z.C) amen[ci] += 0.10 * c.bld[i];
     if (c.zone[i] === Z.I) nuis[ci] += 0.16 * c.bld[i];
+    // A boulevard is a civic amenity; a dirt track is a nuisance. This is what
+    // makes the expensive grade worth buying: it lifts the land value that
+    // decides how tall the lots beside it may go.
+    else if (c.road[i] === ROAD.BOULEVARD) amen[ci] += 0.085;
+    else if (c.road[i] === ROAD.DIRT) nuis[ci] += 0.03;
     if (c.plant[i]) nuis[ci] += PLANTS[c.plant[i] === 1 ? 'coal' : 'oil'].soot * 0.45;
   }
   const a2 = new Float32Array(LVW * LVH), n2 = new Float32Array(LVW * LVH);
@@ -449,7 +495,7 @@ function recomputeLandValue(c) {
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const i = idx(x, y), ci = (y >> 2) * LVW + (x >> 2);
     const rd = c.roadDist[i];
-    const frontage = rd === 0 ? 0 : rd <= ROAD_REACH ? 0.18 - 0.04 * rd : 0;
+    const frontage = rd === 0 || !c.served[i] ? 0 : 0.18 - 0.04 * rd;
     const v = 0.30 + 1.05 * a2[ci] - 1.20 * n2[ci] + frontage;
     c.lv[i] = v < 0.02 ? 0.02 : v > 1 ? 1 : v;
     c.soot[i] = n2[ci];
@@ -516,7 +562,7 @@ function growthPass(c) {
     const i = zoned[(R() * zoned.length) | 0];
     const z = c.zone[i];
     if (!z) continue;
-    const served = c.roadDist[i] <= ROAD_REACH;
+    const served = c.served[i] === 1;
     const lit = c.bld[i] > 0 ? c.powered[i] === 1 : nearPower(c, i);
     const d = z === Z.R ? c.demand.r : z === Z.C ? c.demand.c : c.demand.i;
 
@@ -544,7 +590,7 @@ function markStalls(c) {
   for (const i of c._zonedList) {
     const z = c.zone[i];
     if (!z) { s[i] = STALL.OK; continue; }
-    if (c.roadDist[i] > ROAD_REACH) { s[i] = STALL.NO_ROAD; continue; }
+    if (!c.served[i]) { s[i] = STALL.NO_ROAD; continue; }
     const lit = c.bld[i] > 0 ? c.powered[i] === 1 : nearPower(c, i);
     if (!lit) { s[i] = STALL.NO_POWER; continue; }
     const ceil = tierCeiling(c, i);
@@ -637,7 +683,7 @@ function tally(c) {
     const t = c.bld[i]; if (!t) continue;
     if (!c.powered[i]) continue;              // a dark building houses nobody
     const z = c.zone[i];
-    if (z === Z.R) res += CAP[Z.R][t];
+    if (z === Z.R) res += (t === 1 && c.lv[i] < SHACK_LV) ? CAP_SHACK : CAP[Z.R][t];
     else if (z === Z.C) jobsC += CAP[Z.C][t];
     else if (z === Z.I) jobsI += CAP[Z.I][t];
   }
@@ -649,7 +695,7 @@ function budget(c) {
   const income = res * c.taxRate * 3.2 + jobsC * c.taxRate * 4.0 + jobsI * c.taxRate * 3.4;
   let upkeep = 0;
   for (let i = 0; i < N; i++) {
-    if (c.road[i]) upkeep += 0.40;
+    if (c.road[i]) upkeep += ROAD_SPEC[c.road[i]].upkeep;
     if (c.line[i]) upkeep += 0.15;
     if (c.park[i]) upkeep += 3.0;
   }
