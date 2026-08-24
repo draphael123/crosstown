@@ -139,8 +139,10 @@ function applyDaylight() {
   // hard erases the Lambert shading and the whole town turns into paper cutouts;
   // this is just enough to lift the shadow side, and the warm instance colour on
   // the powered lots does the actual work of looking lit.
-  bmat.emissive.setHex(0xffcf8a);
-  bmat.emissiveIntensity = nightness * 0.13;
+  // The blanket emissive is gone: lit WINDOWS carry the night now, which is
+  // both prettier and does not flatten the Lambert shading the way a uniform
+  // glow across every face did.
+  setFacadeNight(nightness);
   // Cloud shade follows the sun that casts it. Left at full strength after
   // dark it just drops a flat grey veil over an already dim map.
   cloudPlane.material.opacity = 0.05 + day * 0.16;
@@ -603,19 +605,91 @@ const TINT = {
 // bright reads exactly like a block with its lights on.
 const LIT = { [Z.R]: 0xffd79a, [Z.C]: 0xfff0c4, [Z.I]: 0xffc98a };
 
+
+// ------------------------------------------------------------------ facades
+// Buildings are merged boxes, and from the air that is plenty. From the
+// pavement they were blank slabs — which is most of what "looks computer
+// generated" actually means. Rather than texture every box, the facade is drawn
+// procedurally in the fragment shader from OBJECT space: each box is built with
+// its base at y=0, so position.y is height above that building's own ground and
+// the storeys line up per building instead of against a world grid.
+const STOREY = 0.34;      // one floor, in world units, across every tier
+const facadeMats = {};
+function makeFacadeMaterial(zoneKey) {
+  const m = new THREE.MeshLambertMaterial();
+  m.onBeforeCompile = sh => {
+    sh.uniforms.uNight = { value: 0 };
+    sh.uniforms.uZone = { value: zoneKey };
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>',
+        '#include <common>\nvarying vec3 vObjPos;\nvarying vec3 vObjNrm;')
+      .replace('#include <begin_vertex>',
+        '#include <begin_vertex>\nvObjPos = position;\nvObjNrm = normal;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>',
+        '#include <common>\nvarying vec3 vObjPos;\nvarying vec3 vObjNrm;\n'
+        + 'uniform float uNight;\nuniform float uZone;\n'
+        + 'float hash11(float p){ return fract(sin(p*12.9898)*43758.5453); }')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float gWin = 0.0;
+        if (abs(vObjNrm.y) < 0.5) {
+          // Which way the wall faces decides which axis runs across it.
+          float across = abs(vObjNrm.x) > abs(vObjNrm.z) ? vObjPos.z : vObjPos.x;
+          float cw = uZone > 2.5 ? 0.20 : 0.155;      // works get wider sashes
+          float fx = across / cw;
+          float fy = vObjPos.y / ${STOREY.toFixed(3)};
+          vec2 f = vec2(fract(fx), fract(fy));
+          float wx = step(0.20, f.x) * step(f.x, 0.80);
+          float wy = step(0.26, f.y) * step(f.y, 0.84);
+          gWin = wx * wy;
+          // The ground floor is a different building: shopfronts on trade,
+          // loading doors on works, a plain door on a dwelling.
+          if (vObjPos.y < ${STOREY.toFixed(3)}) {
+            if (uZone > 1.5) gWin = step(0.08, f.x) * step(f.x, 0.92) * step(0.10, f.y) * step(f.y, 0.86);
+            else gWin = step(0.40, f.x) * step(f.x, 0.60) * step(0.05, f.y) * step(f.y, 0.72);
+          }
+          float id = floor(fx) * 13.0 + floor(fy) * 7.0 + uZone;
+          float lit = step(0.42, hash11(id));
+          vec3 glass = mix(vec3(0.15,0.17,0.19), vec3(1.0,0.84,0.55), uNight * lit);
+          diffuseColor.rgb = mix(diffuseColor.rgb, glass, gWin * 0.88);
+          gWin *= lit;
+          // A string course under each floor, and grime gathering low down.
+          float band = 1.0 - smoothstep(0.0, 0.055, abs(f.y - 0.05));
+          diffuseColor.rgb *= 1.0 - band * 0.13;
+          diffuseColor.rgb *= 0.90 + 0.10 * smoothstep(0.0, 1.2, vObjPos.y);
+        } else {
+          // Roofs: tar and gravel, not the wall colour.
+          diffuseColor.rgb *= 0.78 + 0.10 * hash11(floor(vObjPos.x*22.0) + floor(vObjPos.z*22.0)*3.0);
+        }`)
+      .replace('#include <emissivemap_fragment>',
+        '#include <emissivemap_fragment>\n'
+        + 'totalEmissiveRadiance += gWin * uNight * vec3(1.0, 0.82, 0.50) * 1.15;');
+    m.userData.shader = sh;
+  };
+  return m;
+}
+for (const z of [Z.R, Z.C, Z.I]) facadeMats[z] = makeFacadeMaterial(z);
+const shackMat = makeFacadeMaterial(0.5);
+function setFacadeNight(n) {
+  for (const m of [...Object.values(facadeMats), shackMat]) {
+    const sh = m.userData.shader;
+    if (sh) sh.uniforms.uNight.value = n;
+  }
+}
+
 const bmat = new THREE.MeshLambertMaterial();
 const flatBuckets = [];
-const mkBucket = list => list.map(make => {
-  const e = { geo: make(), mesh: null, cap: 0, id: flatBuckets.length };
+const mkBucket = (list, mat) => list.map(make => {
+  const e = { geo: make(), mesh: null, cap: 0, mat, id: flatBuckets.length };
   flatBuckets.push(e);
   return e;
 });
 const bucket = {};
 for (const z of [Z.R, Z.C, Z.I]) {
   bucket[z] = [];
-  for (let t = 1; t <= 3; t++) bucket[z][t] = mkBucket(VARIANTS[z][t - 1]);
+  for (let t = 1; t <= 3; t++) bucket[z][t] = mkBucket(VARIANTS[z][t - 1], facadeMats[z]);
 }
-const shackBucket = mkBucket(SHACK_VARIANTS);
+const shackBucket = mkBucket(SHACK_VARIANTS, shackMat);
 // One place decides which mesh a lot belongs in, so the counting pass and the
 // filling pass can never disagree about where a building went.
 const bucketFor = (i, z, t) =>
@@ -624,7 +698,7 @@ function ensureCap(e, need) {
   if (e.mesh && e.cap >= need) return;
   const cap = Math.max(256, 1 << (32 - Math.clz32(Math.max(1, need - 1))));
   if (e.mesh) { scene.remove(e.mesh); e.mesh.dispose(); }
-  const m = new THREE.InstancedMesh(e.geo, bmat, cap);
+  const m = new THREE.InstancedMesh(e.geo, e.mat || bmat, cap);
   m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   m.castShadow = true; m.receiveShadow = true;
   m.frustumCulled = false; m.count = 0;
@@ -646,8 +720,11 @@ const rising = new Map();       // tile -> progress 0..1
 const variantOf = i => (hash(i + 991) * 3) | 0;
 function placeTile(i, e, k, scaleY, scaleXZ) {
   const x = i % W, y = (i / W) | 0, r = hash(i), z = city.zone[i];
-  _q.setFromAxisAngle(YAXIS, ((r * 4) | 0) * Math.PI / 2);
-  _v.set(x + 0.5, padH(x, y), y + 0.5);
+  // A few degrees off square and a few centimetres off centre. Perfectly
+  // aligned lots are the other half of why a generated town looks generated.
+  const jr = hash(i + 1301), jx = hash(i + 2609), jz = hash(i + 3907);
+  _q.setFromAxisAngle(YAXIS, ((r * 4) | 0) * Math.PI / 2 + (jr - 0.5) * 0.13);
+  _v.set(x + 0.5 + (jx - 0.5) * 0.11, padH(x, y), y + 0.5 + (jz - 0.5) * 0.11);
   _sc.set(scaleXZ, scaleY, scaleXZ);
   _m.compose(_v, _q, _sc);
   e.mesh.setMatrixAt(k, _m);
