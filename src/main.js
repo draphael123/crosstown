@@ -3,16 +3,22 @@
 
 import * as THREE from '../vendor/three.module.js';
 import * as S from './sim.js';
+import { makeAudio } from './audio.js';
 
-const { W, H, Z, T, idx } = S;
+const { W, H, N, Z, T, idx } = S;
+const TAU = Math.PI * 2;
 
 const ELEV = 2.0;          // world units per unit of sim elevation
 const GRES = 4;            // ground-texture texels per tile
 const TICK_HZ = 3;         // sim ticks per second at Run
 const AUTOSAVE_SEC = 60;
+const DAY_SEC = 300;       // real seconds for a full day at Run
+const RISE_SEC = 0.85;     // how long a building takes to go up
+const RUBBLE_SEC = 2.2;
+const CAR_MAX = 340;
 const LS = { settings: 'crosstown.settings', slots: 'crosstown.slots', last: 'crosstown.last', save: 'crosstown.save.' };
 
-let city = null;                       // the live sim
+let city = null;
 let current = { slotId: null, name: 'Crosstown' };
 let playing = false;
 
@@ -28,7 +34,7 @@ function nameFor(seed) {
 }
 
 // ---------------------------------------------------------------- settings
-const DEFAULT_SET = { shadows: 1, scale: 1, haze: 1, smoke: 1, lots: 0, autosave: 1 };
+const DEFAULT_SET = { shadows: 1, scale: 1, haze: 1, smoke: 1, lots: 0, autosave: 1, daynight: 1, sound: 1, traffic: 1 };
 let SET = { ...DEFAULT_SET };
 try { Object.assign(SET, JSON.parse(localStorage.getItem(LS.settings) || '{}')); } catch { /* first run */ }
 const saveSettings = () => { try { localStorage.setItem(LS.settings, JSON.stringify(SET)); } catch { /* private mode */ } };
@@ -42,38 +48,100 @@ renderer.toneMappingExposure = 1.05;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
-
-// A vertical wash rather than a flat plate — the horizon is visible at low zoom
-// and a single colour there reads as a missing skybox.
-scene.background = (() => {
-  const cv = document.createElement('canvas');
-  cv.width = 4; cv.height = 256;
-  const g = cv.getContext('2d');
-  const grad = g.createLinearGradient(0, 0, 0, 256);
-  grad.addColorStop(0.00, '#7d9ec0');
-  grad.addColorStop(0.55, '#a8bfcc');
-  grad.addColorStop(1.00, '#d3d3c2');
-  g.fillStyle = grad; g.fillRect(0, 0, 4, 256);
-  const tex = new THREE.CanvasTexture(cv);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-})();
-// The camera orbits at CAM_DIST, so fog has to START beyond it or the whole
-// map sits inside the haze and every colour washes to sky-grey.
 const FOG = new THREE.Fog(0xa8bfcc, 150, 420);
 
 const sun = new THREE.DirectionalLight(0xfff2d6, 2.05);
-sun.position.set(-46, 62, 34);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.bias = -0.0012;
 sun.shadow.normalBias = 0.03;
 {
   const sc = sun.shadow.camera;
-  sc.near = 1; sc.far = 240; sc.left = -52; sc.right = 52; sc.top = 52; sc.bottom = -52;
+  sc.near = 1; sc.far = 260; sc.left = -54; sc.right = 54; sc.top = 54; sc.bottom = -54;
 }
-scene.add(sun, sun.target);
-scene.add(new THREE.HemisphereLight(0xcfe2ee, 0x6b6552, 1.25));
+const hemi = new THREE.HemisphereLight(0xcfe2ee, 0x6b6552, 1.25);
+scene.add(sun, sun.target, hemi);
+
+// ------------------------------------------------------------- day and sky
+// Time of day is not the calendar. The year stays 1955; only the light moves.
+let dayT = 0.36;            // 0 = midnight, 0.5 = noon
+let nightness = 0;
+let skyDrawn = -9;
+
+const skyCv = document.createElement('canvas');
+skyCv.width = 4; skyCv.height = 256;
+const skyCtx = skyCv.getContext('2d');
+const skyTex = new THREE.CanvasTexture(skyCv);
+skyTex.colorSpace = THREE.SRGBColorSpace;
+scene.background = skyTex;
+
+const SKY = {
+  night: ['#151f2e', '#1f2d3d', '#2b3d4e'],
+  dawn: ['#3d5678', '#9c7a72', '#dcb188'],
+  day: ['#7d9ec0', '#a8bfcc', '#d3d3c2'],
+};
+const mixHex = (a, b, t) => {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const r = Math.round((pa >> 16) + ((pb >> 16) - (pa >> 16)) * t);
+  const g = Math.round(((pa >> 8) & 255) + (((pb >> 8) & 255) - ((pa >> 8) & 255)) * t);
+  const bl = Math.round((pa & 255) + ((pb & 255) - (pa & 255)) * t);
+  return `#${((1 << 24) | (r << 16) | (g << 8) | bl).toString(16).slice(1)}`;
+};
+function skyStops(t) {
+  // Two blends: night→dawn as the sun approaches the horizon, dawn→day after.
+  const el = Math.sin((t - 0.25) * TAU);
+  const dawnK = Math.min(1, Math.max(0, (el + 0.35) / 0.45));
+  const dayK = Math.min(1, Math.max(0, (el - 0.05) / 0.35));
+  return SKY.night.map((c, k) => mixHex(mixHex(c, SKY.dawn[k], dawnK), SKY.day[k], dayK));
+}
+function paintSky(force) {
+  if (!force && Math.abs(dayT - skyDrawn) < 0.012) return;
+  skyDrawn = dayT;
+  const [a, b, c] = skyStops(dayT);
+  const g = skyCtx.createLinearGradient(0, 0, 0, 256);
+  g.addColorStop(0, a); g.addColorStop(0.55, b); g.addColorStop(1, c);
+  skyCtx.fillStyle = g; skyCtx.fillRect(0, 0, 4, 256);
+  skyTex.needsUpdate = true;
+  FOG.color.set(b);
+}
+function applyDaylight() {
+  const el = Math.sin((dayT - 0.25) * TAU);
+  const az = (dayT - 0.25) * TAU;
+  // Biased towards daylight, and with a floor under the night: this is a game
+  // you build in, and a pitch-dark map you cannot zone on is a worse toy than
+  // one with no night at all.
+  // Floored at 0.34, so this is an evening rather than a midnight. The SKY is
+  // allowed to go properly dark — it is only backdrop — but the city itself has
+  // to stay readable, because at full dark every zone colour converges on the
+  // same warm smear and you can no longer tell dwellings from works.
+  const day = Math.min(1, Math.max(0.34, el * 1.75 + 0.44));
+  nightness = 1 - day;
+  // A key light at night as well as by day. With only the hemisphere lamp a box
+  // gets nearly the same value on every vertical face, so the whole town goes
+  // flat — the darkness was never the problem, the missing key light was.
+  const moon = Math.max(0, -el);
+  sun.intensity = Math.max(0, el) * 2.4 + moon * 0.5;
+  sun.color.setHex(el <= 0 ? 0x93aacb : el < 0.28 ? 0xffbe86 : 0xfff2d6);
+  hemi.intensity = 0.62 + day * 0.82;
+  hemi.color.setHex(day > 0.5 ? 0xcfe2ee : 0x6d86a6);
+  hemi.groundColor.setHex(day > 0.5 ? 0x6b6552 : 0x353c46);
+  // instanceColor only multiplies DIFFUSE, so a "lit" instance colour is still
+  // dark under a dim lamp. The glow has to come from emissive, which is uniform
+  // across the mesh — every building gets a little, the powered ones get the
+  // warm instance colour on top.
+  // Kept low on purpose. Emissive is added flat across every face, so pushing it
+  // hard erases the Lambert shading and the whole town turns into paper cutouts;
+  // this is just enough to lift the shadow side, and the warm instance colour on
+  // the powered lots does the actual work of looking lit.
+  bmat.emissive.setHex(0xffcf8a);
+  bmat.emissiveIntensity = nightness * 0.13;
+  // Cloud shade follows the sun that casts it. Left at full strength after
+  // dark it just drops a flat grey veil over an already dim map.
+  cloudPlane.material.opacity = 0.05 + day * 0.16;
+  sunAz = az; sunEl = el;
+  paintSky(false);
+}
+let sunAz = 0, sunEl = 1;
 
 // ------------------------------------------------------------------ camera
 const camera = new THREE.OrthographicCamera(-30, 30, 30, -30, 0.1, 500);
@@ -88,7 +156,7 @@ function placeCamera() {
   camera.position.set(view.cx + Math.cos(a) * CAM_DIST * hx, hy * CAM_DIST, view.cz + Math.sin(a) * CAM_DIST * hx);
   camera.lookAt(view.cx, 0, view.cz);
   sun.target.position.set(view.cx, 0, view.cz);
-  sun.position.set(view.cx - 46, 62, view.cz + 34);
+  sun.position.set(view.cx + Math.cos(sunAz) * 72, Math.max(9, sunEl * 86), view.cz + Math.sin(sunAz) * 54);
   const k = view.zoomNow, ar = innerWidth / innerHeight;
   camera.left = -k * ar; camera.right = k * ar; camera.top = k; camera.bottom = -k;
   camera.updateProjectionMatrix();
@@ -124,9 +192,6 @@ const gTex = (() => {
   return { cv, g, tex };
 })();
 
-// Farmland, not lawn. A single green makes 25,000 tiles of countryside read as
-// one flat sheet; a coarse lattice quantised into five field tones gives the
-// patchwork an aerial photograph of 1955 America actually shows.
 const FIELD = [
   ['#7c8a58', '#87945f', '#73824f'],   // pasture
   ['#9aa06a', '#a3a874', '#93995f'],   // hay
@@ -150,13 +215,13 @@ const fieldOf = (x, y) => FIELD[Math.min(FIELD.length - 1,
   (latAt(fieldLat, x / (W - 1), y / (H - 1)) * FIELD.length) | 0)];
 
 const PAL = {
-  water: ['#41708c', '#3a6580', '#4a7a95'],
+  water: ['#3c6b88', '#41708c', '#48789a', '#4d7fa0', '#457694', '#3f6d8a'],
   shore: ['#a8a077', '#b0a880', '#9d956d'],
   tree: ['#4e6b41', '#587448', '#47623c'],
-  road: '#54524c', roadLine: '#b9b29a', kerb: '#6f6c64',
+  road: '#54524c', roadLine: '#b9b29a',
   park: '#5d8348', parkPath: '#a89a76',
   lot: { [Z.R]: '#9aa872', [Z.C]: '#7f96a8', [Z.I]: '#a89a72' },
-  plant: '#6a6258',
+  plant: '#6a6258', rubble: '#8a8074',
 };
 const hash = i => { let h = (i * 2654435761) >>> 0; h ^= h >>> 13; return (h >>> 0) / 4294967296; };
 const nearWater = (x, y) => {
@@ -167,15 +232,22 @@ const nearWater = (x, y) => {
   return false;
 };
 
+let waterPhase = 0;
+const rubble = new Map();      // tile -> seconds of dust left
+
 function paintTile(x, y) {
   const g = gTex.g, i = idx(x, y), px = x * GRES, py = y * GRES;
   const t = city.terrain[i], r = hash(i);
 
-  if (t === T.WATER) { g.fillStyle = PAL.water[(r * 3) | 0]; g.fillRect(px, py, GRES, GRES); return; }
+  if (t === T.WATER) {
+    // Bands stepping along the channel, not random flicker — flicker reads as
+    // a rendering fault, a moving band reads as current.
+    const k = ((x * 0.7 + y * 1.1 + waterPhase) | 0) % PAL.water.length;
+    g.fillStyle = PAL.water[(k + PAL.water.length) % PAL.water.length];
+    g.fillRect(px, py, GRES, GRES);
+    return;
+  }
 
-  // Bare ground, shaded a little by height so relief reads even where it is flat.
-  // Dry land touching the river gets a silt bank, which is what stops the water
-  // reading as a strip of blue paint laid over a lawn.
   const bare = nearWater(x, y) ? PAL.shore[(r * 3) | 0]
     : t === T.TREE ? PAL.tree[(r * 3) | 0] : fieldOf(x, y)[(r * 3) | 0];
   g.fillStyle = bare;
@@ -185,6 +257,8 @@ function paintTile(x, y) {
 
   if (city.plant[i]) { g.fillStyle = PAL.plant; g.fillRect(px, py, GRES, GRES); return; }
 
+  if (rubble.has(i)) { g.fillStyle = PAL.rubble; g.fillRect(px, py, GRES, GRES); return; }
+
   if (city.park[i]) {
     g.fillStyle = PAL.park; g.fillRect(px, py, GRES, GRES);
     g.fillStyle = PAL.parkPath; g.fillRect(px + 1, py + 1, 1, 1); g.fillRect(px + 2, py + 2, 1, 1);
@@ -192,9 +266,7 @@ function paintTile(x, y) {
   }
 
   if (city.road[i]) {
-    g.fillStyle = PAL.kerb; g.fillRect(px, py, GRES, GRES);
     g.fillStyle = PAL.road; g.fillRect(px, py, GRES, GRES);
-    // Centreline stubs toward each paved neighbour, so junctions read as junctions.
     g.fillStyle = PAL.roadLine;
     const c0 = px + (GRES >> 1) - 1, c1 = py + (GRES >> 1) - 1;
     if (x + 1 < W && city.road[idx(x + 1, y)]) g.fillRect(c0 + 1, c1, GRES >> 1, 1);
@@ -211,6 +283,13 @@ function paintTile(x, y) {
     if (!city.bld[i]) {
       g.fillStyle = 'rgba(50,44,30,.38)';
       g.fillRect(px, py, 1, 1); g.fillRect(px + GRES - 1, py + GRES - 1, 1, 1);
+      // A hard blocker gets a mark. NO_DEMAND deliberately does not: waiting for
+      // demand is the game working, not the player having made a mistake.
+      const st = city.stall[i];
+      if (st === S.STALL.NO_ROAD || st === S.STALL.NO_POWER) {
+        g.fillStyle = st === S.STALL.NO_ROAD ? '#b4402f' : '#d09a26';
+        g.fillRect(px + 1, py + 1, 2, 2);
+      }
     }
     if (SET.lots) {
       g.fillStyle = 'rgba(40,34,22,.32)';
@@ -224,6 +303,7 @@ function paintTile(x, y) {
 }
 
 const dirtyTiles = new Set();
+let waterTiles = [];
 function touch(x, y) {
   for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
     const nx = x + dx, ny = y + dy;
@@ -257,9 +337,56 @@ function reshapeGround() {
   groundGeo.computeVertexNormals();
 }
 
+// ------------------------------------------------------------ survey sheets
+// One texel per tile, written through ImageData — far faster than 25,600
+// fillRects, and it shares the ground's displaced geometry so it drapes over
+// the relief for free.
+const ovrCv = document.createElement('canvas');
+ovrCv.width = W; ovrCv.height = H;
+const ovrCtx = ovrCv.getContext('2d');
+const ovrImg = ovrCtx.createImageData(W, H);
+const ovrTex = new THREE.CanvasTexture(ovrCv);
+ovrTex.colorSpace = THREE.SRGBColorSpace;
+ovrTex.magFilter = THREE.NearestFilter;
+const ovrMesh = new THREE.Mesh(groundGeo, new THREE.MeshBasicMaterial({
+  map: ovrTex, transparent: true, opacity: 0.78, depthWrite: false,
+}));
+ovrMesh.position.set(W / 2, 0.07, H / 2);
+ovrMesh.visible = false;
+ovrMesh.renderOrder = 2;
+scene.add(ovrMesh);
+
+let ovrMode = 'none', ovrAcc = 0;
+function paintOverlay() {
+  const d = ovrImg.data;
+  for (let i = 0; i < N; i++) {
+    const o = i * 4;
+    let r = 0, g = 0, b = 0, a = 0;
+    if (ovrMode === 'value') {
+      const v = city.lv[i];
+      r = 236 - v * 200; g = 226 - v * 150; b = 190 + v * 60;   // ochre → mimeo blue
+      a = 150 + v * 90;
+    } else if (ovrMode === 'power') {
+      if (city.powered[i]) { r = 214; g = 154; b = 44; a = 190; }
+      else if (city.bld[i] || city.zone[i]) { r = 168; g = 58; b = 44; a = 200; }
+      else { a = 0; }
+    } else if (ovrMode === 'smoke') {
+      const v = Math.min(1, city.soot[i] * 2.2);
+      if (v < 0.02) { a = 0; } else { r = 92 + v * 40; g = 84 + v * 26; b = 76; a = 40 + v * 200; }
+    }
+    d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = a;
+  }
+  ovrCtx.putImageData(ovrImg, 0, 0);
+  ovrTex.needsUpdate = true;
+}
+function setOverlay(m) {
+  ovrMode = m;
+  ovrMesh.visible = m !== 'none';
+  for (const b of document.querySelectorAll('#ovr button')) b.classList.toggle('on', b.dataset.o === m);
+  if (m !== 'none') paintOverlay();
+}
+
 // ---------------------------------------------------------------- geometry
-// Merge helper: BoxGeometry is indexed, so everything is converted to
-// non-indexed triangle soup first and the attribute arrays simply concatenated.
 function mergeGeos(list) {
   const geos = list.map(g => (g.index ? g.toNonIndexed() : g));
   let n = 0;
@@ -278,13 +405,10 @@ function mergeGeos(list) {
   out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
   return out;
 }
-// y is the BASE of each part, not its centre — makes the tables readable.
 const box = (w, h, d, x = 0, y = 0, z = 0) => { const g = new THREE.BoxGeometry(w, h, d); g.translate(x, y + h / 2, z); return g; };
 const pyr = (r, h, y) => { const g = new THREE.ConeGeometry(r, h, 4); g.rotateY(Math.PI / 4); g.translate(0, y + h / 2, 0); return g; };
 const stack = (r, h, x, y, z) => { const g = new THREE.CylinderGeometry(r * 0.8, r, h, 6); g.translate(x, y + h / 2, z); return g; };
 
-// Three silhouettes per zone per tier. One box per tier makes a block read as a
-// tray of sugar cubes; the variety is what sells it as a town from the air.
 const VARIANTS = {
   [Z.R]: [
     [() => mergeGeos([box(.56, .38, .56), pyr(.44, .26, .38)]),
@@ -325,15 +449,22 @@ const TINT = {
   [Z.C]: ['#d8d2c2', '#c6c9c6', '#e0dccb', '#b9bfc0', '#cfc8b4'],
   [Z.I]: ['#8d6a58', '#7d6154', '#96786a', '#6e5f57', '#8a7160'],
 };
+// Lit windows after dark. Instanced meshes cannot carry per-instance emissive,
+// but ambient light falls at night, so pushing the instance COLOUR warm and
+// bright reads exactly like a block with its lights on.
+const LIT = { [Z.R]: 0xffd79a, [Z.C]: 0xfff0c4, [Z.I]: 0xffc98a };
 
 const bmat = new THREE.MeshLambertMaterial();
-// Capacity grows on demand: a fixed cap either wastes tens of megabytes on 27
-// meshes or silently clips a block the player can see is missing.
+const flatBuckets = [];
 const bucket = {};
 for (const z of [Z.R, Z.C, Z.I]) {
   bucket[z] = [];
   for (let t = 1; t <= 3; t++) {
-    bucket[z][t] = VARIANTS[z][t - 1].map(make => ({ geo: make(), mesh: null, cap: 0 }));
+    bucket[z][t] = VARIANTS[z][t - 1].map(make => {
+      const e = { geo: make(), mesh: null, cap: 0, id: flatBuckets.length };
+      flatBuckets.push(e);
+      return e;
+    });
   }
 }
 function ensureCap(e, need) {
@@ -349,49 +480,105 @@ function ensureCap(e, need) {
 }
 
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _v = new THREE.Vector3();
-const _one = new THREE.Vector3(1, 1, 1), _col = new THREE.Color();
+const _sc = new THREE.Vector3(1, 1, 1), _col = new THREE.Color(), _lit = new THREE.Color();
 const YAXIS = new THREE.Vector3(0, 1, 0);
 
-let bldDirty = true;
-function rebuildBuildings() {
-  // pass 1 — how many of each variant, so capacity is right before filling
-  const need = {};
-  for (const z of [Z.R, Z.C, Z.I]) { need[z] = [null, [0, 0, 0], [0, 0, 0], [0, 0, 0]]; }
-  for (const i of city._zonedList) {
-    const t = city.bld[i], z = city.zone[i];
-    if (!t || !z) continue;
-    need[z][t][(hash(i + 991) * 3) | 0]++;
-  }
-  for (const z of [Z.R, Z.C, Z.I]) for (let t = 1; t <= 3; t++)
-    bucket[z][t].forEach((e, v) => ensureCap(e, need[z][t][v]));
+// Which instance a tile's building lives in, so a rise can be animated in place
+// instead of rebuilding all 27 meshes on every frame of it.
+const slotBucket = new Int16Array(N).fill(-1);
+const slotIndex = new Int32Array(N).fill(-1);
+const prevBld = new Uint8Array(N);
+const rising = new Map();       // tile -> progress 0..1
 
-  // pass 2 — fill
-  const n = {};
-  for (const z of [Z.R, Z.C, Z.I]) n[z] = [null, [0, 0, 0], [0, 0, 0], [0, 0, 0]];
+const variantOf = i => (hash(i + 991) * 3) | 0;
+function placeTile(i, e, k, scaleY, scaleXZ) {
+  const x = i % W, y = (i / W) | 0, r = hash(i), z = city.zone[i];
+  _q.setFromAxisAngle(YAXIS, ((r * 4) | 0) * Math.PI / 2);
+  _v.set(x + 0.5, hAt(x, y), y + 0.5);
+  _sc.set(scaleXZ, scaleY, scaleXZ);
+  _m.compose(_v, _q, _sc);
+  e.mesh.setMatrixAt(k, _m);
+  const pal = TINT[z];
+  _col.set(pal[(r * pal.length) | 0]);
+  if (!city.powered[i]) _col.multiplyScalar(0.5);
+  else if (nightness > 0.15) _col.lerp(_lit.setHex(LIT[z]), Math.min(0.30, nightness * 0.55));
+  else _col.multiplyScalar(1 - nightness * 0.35);
+  e.mesh.setColorAt(k, _col);
+}
+
+let bldDirty = true, litDrawn = 0;
+function rebuildBuildings() {
+  const need = new Int32Array(flatBuckets.length);
   for (const i of city._zonedList) {
     const t = city.bld[i], z = city.zone[i];
     if (!t || !z) continue;
-    const x = i % W, y = (i / W) | 0, r = hash(i);
-    const v = (hash(i + 991) * 3) | 0, e = bucket[z][t][v];
-    const k = n[z][t][v]++;
-    if (k >= e.cap) continue;
-    _q.setFromAxisAngle(YAXIS, ((r * 4) | 0) * Math.PI / 2);
-    _v.set(x + 0.5, hAt(x, y), y + 0.5);
-    _m.compose(_v, _q, _one);
-    e.mesh.setMatrixAt(k, _m);
-    const pal = TINT[z];
-    _col.set(pal[(r * pal.length) | 0]);
-    if (!city.powered[i]) _col.multiplyScalar(0.55);   // a dark building looks dark
-    e.mesh.setColorAt(k, _col);
+    need[bucket[z][t][variantOf(i)].id]++;
   }
-  for (const z of [Z.R, Z.C, Z.I]) for (let t = 1; t <= 3; t++)
-    bucket[z][t].forEach((e, v) => {
-      if (!e.mesh) return;
-      e.mesh.count = Math.min(n[z][t][v], e.cap);
-      e.mesh.instanceMatrix.needsUpdate = true;
-      if (e.mesh.instanceColor) e.mesh.instanceColor.needsUpdate = true;
-    });
+  for (let k = 0; k < flatBuckets.length; k++) ensureCap(flatBuckets[k], need[k]);
+
+  slotBucket.fill(-1); slotIndex.fill(-1);
+  const n = new Int32Array(flatBuckets.length);
+  for (const i of city._zonedList) {
+    const t = city.bld[i], z = city.zone[i];
+    if (!t || !z) continue;
+    const e = bucket[z][t][variantOf(i)];
+    const k = n[e.id]++;
+    if (k >= e.cap) continue;
+    slotBucket[i] = e.id; slotIndex[i] = k;
+    const p = rising.get(i);
+    const s = p === undefined ? 1 : easeRise(p);
+    placeTile(i, e, k, s, 0.82 + 0.18 * s);
+  }
+  for (const e of flatBuckets) {
+    if (!e.mesh) continue;
+    e.mesh.count = Math.min(n[e.id], e.cap);
+    e.mesh.instanceMatrix.needsUpdate = true;
+    if (e.mesh.instanceColor) e.mesh.instanceColor.needsUpdate = true;
+  }
   bldDirty = false;
+  litDrawn = nightness;
+}
+const easeRise = p => 1 - Math.pow(1 - p, 3);
+
+// Only the lots actually going up are touched per frame; everything else keeps
+// the matrix it already had.
+function stepRising(dt) {
+  if (!rising.size) return;
+  const dirty = new Set();
+  for (const [i, p] of rising) {
+    const np = p + dt / RISE_SEC;
+    if (np >= 1) { rising.delete(i); } else { rising.set(i, np); }
+    const b = slotBucket[i];
+    if (b < 0) continue;
+    const e = flatBuckets[b];
+    const s = easeRise(Math.min(1, np));
+    placeTile(i, e, slotIndex[i], s, 0.82 + 0.18 * s);
+    dirty.add(e);
+  }
+  for (const e of dirty) {
+    e.mesh.instanceMatrix.needsUpdate = true;
+    if (e.mesh.instanceColor) e.mesh.instanceColor.needsUpdate = true;
+  }
+}
+
+// What changed since the last tick: things going up get an animation, things
+// coming down leave dust on the lot for a couple of seconds.
+function noteChanges() {
+  for (const i of city._zonedList) {
+    const b = city.bld[i];
+    if (b === prevBld[i]) continue;
+    if (b > prevBld[i]) rising.set(i, 0);
+    else if (prevBld[i] > 0) { rubble.set(i, RUBBLE_SEC); touch(i % W, (i / W) | 0); }
+    prevBld[i] = b;
+  }
+}
+function stepRubble(dt) {
+  if (!rubble.size) return;
+  for (const [i, left] of rubble) {
+    const n = left - dt;
+    if (n <= 0) { rubble.delete(i); touch(i % W, (i / W) | 0); }
+    else rubble.set(i, n);
+  }
 }
 
 // -------------------------------------------------------------------- trees
@@ -421,6 +608,132 @@ function rebuildTrees() {
   treeMesh.instanceMatrix.needsUpdate = true;
   if (treeMesh.instanceColor) treeMesh.instanceColor.needsUpdate = true;
 }
+
+// ------------------------------------------------------------------ traffic
+// The road grid is already a graph. A car holds two tiles and a fraction, picks
+// a neighbour that is not where it came from, and repeats — no pathfinding, and
+// from this height it reads exactly like traffic.
+// Deliberately oversized against a 1-unit lot: at this camera height a
+// to-scale motor car is three pixels and reads as noise on the tarmac.
+const carGeo = mergeGeos([
+  box(.48, .13, .23),                    // body, long axis on +X
+  box(.22, .10, .21, -.03, .13),         // cabin
+  box(.50, .04, .17, 0, .03),            // running boards
+]);
+const carMesh = new THREE.InstancedMesh(carGeo, new THREE.MeshLambertMaterial(), CAR_MAX);
+carMesh.frustumCulled = false; carMesh.castShadow = true; carMesh.count = 0;
+scene.add(carMesh);
+const CAR_COL = ['#2f3338', '#6d7378', '#8a2f2a', '#25415e', '#b9b2a2', '#3d5c48', '#7d6a4a', '#a8a49a'];
+
+let roadList = [], roadVer = -1;
+const cars = [];
+function refreshRoadList() {
+  roadList = [];
+  for (let i = 0; i < N; i++) if (city.road[i]) roadList.push(i);
+  roadVer = city.roadVersion;
+}
+function roadNext(from, notThis) {
+  const x = from % W, y = (from / W) | 0;
+  const opts = [];
+  for (let k = 0; k < 4; k++) {
+    const nx = x + (k === 0 ? 1 : k === 1 ? -1 : 0), ny = y + (k === 2 ? 1 : k === 3 ? -1 : 0);
+    if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+    const j = idx(nx, ny);
+    if (!city.road[j]) continue;
+    if (j !== notThis) opts.push(j);
+  }
+  if (!opts.length) return notThis >= 0 && city.road[notThis] ? notThis : -1;
+  return opts[(Math.random() * opts.length) | 0];
+}
+function spawnCar() {
+  if (!roadList.length) return null;
+  const from = roadList[(Math.random() * roadList.length) | 0];
+  const to = roadNext(from, -1);
+  if (to < 0) return null;
+  return { from, to, p: Math.random(), spd: 1.5 + Math.random() * 1.4, col: CAR_COL[(Math.random() * CAR_COL.length) | 0] };
+}
+function stepTraffic(dt) {
+  if (!SET.traffic) { carMesh.count = 0; return; }
+  if (city.roadVersion !== roadVer) refreshRoadList();
+  const busy = city.pop.res + city.pop.jobsC + city.pop.jobsI;
+  const target = Math.min(CAR_MAX, Math.round(busy / 42));
+  while (cars.length > target) cars.pop();
+  // In batches, not one a frame: opening a saved city of 8,000 people should
+  // show its traffic straight away, not trickle it in over five seconds.
+  for (let k = 0; k < 24 && cars.length < target; k++) {
+    const c = spawnCar();
+    if (!c) break;
+    cars.push(c);
+  }
+
+  let k = 0;
+  for (const c of cars) {
+    c.p += dt * c.spd;
+    let guard = 0;
+    while (c.p >= 1 && guard++ < 4) {
+      c.p -= 1;
+      const prev = c.from;
+      c.from = c.to;
+      c.to = roadNext(c.from, prev);
+      if (c.to < 0) { c.to = c.from; c.p = 0; break; }
+    }
+    if (!city.road[c.from] || !city.road[c.to]) {   // the street was razed under it
+      const n = spawnCar(); if (!n) continue;
+      c.from = n.from; c.to = n.to; c.p = 0;
+    }
+    const fx = c.from % W, fy = (c.from / W) | 0;
+    const tx = c.to % W, ty = (c.to / W) | 0;
+    const dx = tx - fx, dz = ty - fy;
+    // Keep right: offset perpendicular to travel so the two directions separate.
+    const ox = -dz * 0.17, oz = dx * 0.17;
+    const x = fx + 0.5 + dx * c.p + ox;
+    const z = fy + 0.5 + dz * c.p + oz;
+    const yh = hAt(fx, fy) + (hAt(tx, ty) - hAt(fx, fy)) * c.p + 0.055;
+    _q.setFromAxisAngle(YAXIS, Math.atan2(-dz, dx));
+    _v.set(x, yh, z);
+    _sc.set(1, 1, 1);
+    _m.compose(_v, _q, _sc);
+    carMesh.setMatrixAt(k, _m);
+    _col.set(c.col);
+    if (nightness > 0.3) _col.lerp(new THREE.Color(0xfff0c0), (nightness - 0.3) * 0.5);
+    carMesh.setColorAt(k, _col);
+    k++;
+  }
+  carMesh.count = k;
+  carMesh.instanceMatrix.needsUpdate = true;
+  if (carMesh.instanceColor) carMesh.instanceColor.needsUpdate = true;
+}
+
+// ------------------------------------------------------------ cloud shadows
+const cloudTex = (() => {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 256;
+  const g = cv.getContext('2d');
+  g.clearRect(0, 0, 256, 256);
+  // Wrapped blobs: each is drawn nine times so nothing is cut at the seam.
+  for (let k = 0; k < 26; k++) {
+    const cx = Math.random() * 256, cy = Math.random() * 256, r = 22 + Math.random() * 52;
+    for (let ox = -256; ox <= 256; ox += 256) for (let oy = -256; oy <= 256; oy += 256) {
+      const rad = g.createRadialGradient(cx + ox, cy + oy, 0, cx + ox, cy + oy, r);
+      rad.addColorStop(0, 'rgba(255,255,255,.52)');
+      rad.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = rad;
+      g.beginPath(); g.arc(cx + ox, cy + oy, r, 0, TAU); g.fill();
+    }
+  }
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(2.2, 2.2);
+  return t;
+})();
+// Sits above the whole scene rather than on the ground: at this pitch the
+// parallax is invisible, and clouds get to shade the buildings too.
+const cloudPlane = new THREE.Mesh(
+  new THREE.PlaneGeometry(W * 3, H * 3).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ map: cloudTex, transparent: true, opacity: 0.19, color: 0x1a2630, depthWrite: false })
+);
+cloudPlane.renderOrder = 3;
+scene.add(cloudPlane);
 
 // ------------------------------------------------------------------- plants
 const plantGroup = new THREE.Group();
@@ -461,16 +774,16 @@ function rebuildPlants() {
     g.position.copy(base);
     plantGroup.add(g);
 
-    // Plumes. Coal makes more of them and darker.
     const per = p.kind === 'coal' ? 5 : 3;
     for (const top of tops) for (let k = 0; k < per; k++) {
       const sp = new THREE.Sprite(new THREE.SpriteMaterial({
         map: puffTex, transparent: true, depthWrite: false,
         color: p.kind === 'coal' ? 0xb9b2a4 : 0xd8d4c8,
       }));
-      sp.position.copy(base).add(top).add(new THREE.Vector3(0, 1.3, 0));
+      const origin = base.clone().add(top).add(new THREE.Vector3(0, 1.3, 0));
+      sp.position.copy(origin);
       smokeGroup.add(sp);
-      puffs.push({ sp, origin: base.clone().add(top).add(new THREE.Vector3(0, 1.3, 0)), phase: k / per + Math.random() * 0.1 });
+      puffs.push({ sp, origin, phase: k / per + Math.random() * 0.1 });
     }
   }
   smokeGroup.visible = !!SET.smoke;
@@ -504,15 +817,27 @@ function applyWorld() {
     for (let i = 0; i < a.length; i++) a[i] = rnd();
     return { n, a };
   })();
+  rubble.clear(); rising.clear(); cars.length = 0;
+  prevBld.set(city.bld);
+  roadVer = -1;
   reshapeGround();
   paintAll();
   rebuildTrees();
   rebuildPlants();
   rebuildBuildings();
+  waterTiles = [];
+  for (let i = 0; i < N; i++) if (city.terrain[i] === T.WATER) waterTiles.push(i);
+  if (ovrMode !== 'none') paintOverlay();
 }
+
+// ------------------------------------------------------------------- audio
+const audio = makeAudio();
 
 // ---------------------------------------------------------------- settings
 const OPTS = [
+  { k: 'daynight', lab: 'Day and night', sub: 'The light moves; the year does not' },
+  { k: 'traffic', lab: 'Traffic', sub: 'Motor cars on the streets' },
+  { k: 'sound', lab: 'Sound', sub: 'Ambience, whistles and bells' },
   { k: 'shadows', lab: 'Cast shadows', sub: 'Sunlight and building shadows' },
   { k: 'scale', lab: 'Render detail', sub: 'Lower this if the map stutters', on: 'Full', off: 'Half' },
   { k: 'haze', lab: 'Distance haze', sub: 'Atmospheric fade at the map edge' },
@@ -524,6 +849,9 @@ function applySettings() {
   renderer.shadowMap.enabled = !!SET.shadows;
   scene.fog = SET.haze ? FOG : null;
   smokeGroup.visible = !!SET.smoke;
+  cloudPlane.visible = !!SET.haze;
+  audio.setEnabled(!!SET.sound);
+  if (!SET.daynight) { dayT = 0.36; applyDaylight(); bldDirty = true; }
   // Fog and shadow are compiled into the shader, so every material has to be
   // told to rebuild or the toggle does nothing until something else changes.
   scene.traverse(o => {
@@ -542,8 +870,9 @@ function buildOptList() {
       <div class="seg"><button data-v="1">${o.on || 'On'}</button><button data-v="0">${o.off || 'Off'}</button></div>`;
     const [bOn, bOff] = row.querySelectorAll('.seg button');
     const sync = () => { bOn.classList.toggle('on', !!SET[o.k]); bOff.classList.toggle('on', !SET[o.k]); };
-    bOn.onclick = () => { SET[o.k] = 1; sync(); saveSettings(); applySettings(); if (o.k === 'lots') paintAll(); };
-    bOff.onclick = () => { SET[o.k] = 0; sync(); saveSettings(); applySettings(); if (o.k === 'lots') paintAll(); };
+    const set = v => { SET[o.k] = v; sync(); saveSettings(); applySettings(); if (o.k === 'lots') paintAll(); };
+    bOn.onclick = () => set(1);
+    bOff.onclick = () => set(0);
     sync();
     el.appendChild(row);
   }
@@ -573,6 +902,7 @@ function loadCity(id) {
   const c = blob && S.deserialize(blob);
   if (!c) { toast('That file is unreadable'); return false; }
   city = c;
+  S.computeDistricts(city);
   current = { slotId: id, name: blob.name || nameFor(c.seed) };
   try { localStorage.setItem(LS.last, id); } catch { /* ignore */ }
   enterCity();
@@ -601,6 +931,7 @@ let settingsFrom = 'scrTitle';
 function show(which) {
   overlay.classList.remove('hide');
   hud.classList.add('hide');
+  hideCard();
   for (const s of SHEETS) document.getElementById(s).classList.toggle('hide', s !== which);
   if (which === 'scrTitle') refreshTitle();
   if (which === 'scrLoad') refreshSlots();
@@ -658,7 +989,6 @@ function toast(msg) {
   toastT = setTimeout(() => el.classList.remove('show'), 1600);
 }
 
-// enter a city that is already in `city`
 function enterCity() {
   applyWorld();
   document.getElementById('mastName').textContent = current.name;
@@ -668,6 +998,7 @@ function enterCity() {
   lastRank = city.rank;
   playing = true;
   setSpeed(1);
+  setOverlay('none');
   refreshTools(); updateHUD();
   hideOverlay();
   autosaveAcc = 0;
@@ -678,21 +1009,19 @@ function startNew(name, seed) {
   current = { slotId: null, name };
   enterCity();
 }
-
-// title backdrop: an unbuilt map, slowly turning
 function showTitle() {
   playing = false;
   bullEl.innerHTML = '';
+  labelsEl.innerHTML = ''; labelPool.clear();
   const seed = (Math.random() * 1e6) | 0;
   city = S.makeCity(seed);
   S.stepCity(city);
   lastRank = city.rank;
   applyWorld();
   view.cx = view.tx = W / 2; view.cz = view.tz = H / 2;
-  // Close enough that the map's own edge never enters frame — pulled back, the
-  // ground reads as a diamond floating in the sky rather than as country.
   view.zoom = 1; view.zoomNow = ZOOMS[1];
   cursor.visible = false;
+  setOverlay('none');
   show('scrTitle');
 }
 
@@ -707,6 +1036,7 @@ const TOOLS = [
   { id: 'coal', k: 'Coal Stn', p: '$' + S.PLANTS.coal.cost, need: null, sw: '#6a6258' },
   { id: 'oil', k: 'Oil Stn', p: '$' + S.PLANTS.oil.cost, need: 'plant_oil', sw: '#7a7469' },
   { id: 'park', k: 'Green', p: '$' + S.COST.park, need: 'park', sw: '#5d8348' },
+  { id: 'inspect', k: 'Inspect', p: 'free', need: null, sw: '#33488c' },
 ];
 let tool = 'road';
 const toolsEl = document.getElementById('tools');
@@ -717,10 +1047,11 @@ TOOLS.forEach((t, n) => {
     <span class="k">${t.k}</span><span class="p">${t.p}</span>`;
   d.onclick = () => { if (!d.classList.contains('locked')) setTool(t.id); };
   toolsEl.appendChild(d);
-  t.el = d; t.hotkey = String(n + 1);
+  t.el = d; t.hotkey = String((n + 1) % 10);
 });
 function setTool(id) {
   tool = id;
+  if (id !== 'inspect') hideCard();
   for (const t of TOOLS) t.el.classList.toggle('on', t.id === id);
 }
 function refreshTools() {
@@ -730,13 +1061,89 @@ function refreshTools() {
     if (locked && tool === t.id) setTool('road');
   }
 }
-setTool('road');
+// NOT called here: setTool reaches hideCard, whose card element is declared
+// further down and would still be in its temporal dead zone. It runs in `go`.
+
+// -------------------------------------------------------------- index card
+const cardEl = document.getElementById('card');
+const VALUE_BAND = v => v < 0.22 ? 'Poor' : v < 0.38 ? 'Modest' : v < 0.56 ? 'Fair' : v < 0.74 ? 'Good' : 'Prime';
+const ZONE_NAME = { [Z.R]: 'Dwelling', [Z.C]: 'Trade', [Z.I]: 'Works' };
+function hideCard() { cardEl.classList.remove('show'); }
+function showCard(x, y, sx, sy) {
+  const i = idx(x, y);
+  const d = S.districtAt(city, i);
+  const num = 100 + ((x * 17 + y * 7) % 420);
+  const street = d ? d.name : city.road[i] ? 'Unnamed street' : 'Unplatted land';
+  document.getElementById('cardAddr').textContent =
+    city.zone[i] || city.road[i] ? `${num} ${street}` : street;
+  document.getElementById('cardDist').textContent = d
+    ? `${d.n} lots · ${d.pop.toLocaleString('en-US')} ${d.zone === Z.R ? 'residents' : 'jobs'}`
+    : `tract ${city.seed} · ${x}, ${y}`;
+
+  const rows = [];
+  const put = (k, v) => rows.push(`<div class="cr"><span>${k}</span><b>${v}</b></div>`);
+  if (city.plant[i]) put('Use', 'Generating station');
+  else if (city.road[i]) put('Use', 'Street');
+  else if (city.park[i]) put('Use', 'Public green');
+  else if (city.zone[i]) {
+    put('Zoned', ZONE_NAME[city.zone[i]]);
+    put('Storeys', city.bld[i] || '—');
+    const occ = city.bld[i] ? S.CAP[city.zone[i]][city.bld[i]] : 0;
+    put(city.zone[i] === Z.R ? 'Residents' : 'Jobs', city.powered[i] ? occ : 0);
+  } else {
+    put('Use', city.terrain[i] === T.WATER ? 'River' : city.terrain[i] === T.TREE ? 'Woodland' : 'Open ground');
+  }
+  if (city.terrain[i] !== T.WATER) {
+    put('Land value', VALUE_BAND(city.lv[i]));
+    put('Frontage', city.roadDist[i] === 0 ? 'On the street' : city.roadDist[i] > 4 ? 'None' : city.roadDist[i] + (city.roadDist[i] === 1 ? ' lot away' : ' lots away'));
+    put('Current', city.powered[i] ? 'Connected' : 'None');
+    if (city.soot[i] > 0.12) put('Smoke', city.soot[i] > 0.34 ? 'Heavy' : 'Some');
+  }
+  document.getElementById('cardRows').innerHTML = rows.join('');
+
+  const why = document.getElementById('cardWhy');
+  const st = city.zone[i] ? city.stall[i] : 0;
+  why.className = st === S.STALL.NO_ROAD || st === S.STALL.NO_POWER ? 'bad' : st === S.STALL.CAPPED ? 'warn' : '';
+  why.textContent = st && S.STALL_TEXT[st] ? S.STALL_TEXT[st] : '';
+  why.style.display = why.textContent ? '' : 'none';
+
+  cardEl.classList.add('show');
+  const w = 222, h = cardEl.offsetHeight || 190;
+  cardEl.style.left = Math.min(innerWidth - w - 12, Math.max(12, sx + 16)) + 'px';
+  cardEl.style.top = Math.min(innerHeight - h - 12, Math.max(12, sy - 40)) + 'px';
+}
+
+// --------------------------------------------------------- district labels
+const labelsEl = document.getElementById('labels');
+const labelPool = new Map();
+const _proj = new THREE.Vector3();
+function updateLabels() {
+  if (!playing || !overlay.classList.contains('hide')) { labelsEl.style.display = 'none'; return; }
+  labelsEl.style.display = '';
+  const live = new Set();
+  for (const d of city.districts) {
+    live.add(d.anchor);
+    let el = labelPool.get(d.anchor);
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'dlab';
+      labelsEl.appendChild(el);
+      labelPool.set(d.anchor, el);
+    }
+    if (el.textContent !== d.name) el.textContent = d.name;
+    _proj.set(d.x + 0.5, hAt(Math.round(d.x), Math.round(d.y)) + 2.6, d.y + 0.5).project(camera);
+    if (_proj.z > 1) { el.style.opacity = '0'; continue; }
+    el.style.left = ((_proj.x * 0.5 + 0.5) * innerWidth) + 'px';
+    el.style.top = ((-_proj.y * 0.5 + 0.5) * innerHeight) + 'px';
+    // Fades out when you are close enough to read the buildings themselves.
+    el.style.opacity = view.zoomNow < 22 ? '0' : String(Math.min(1, (view.zoomNow - 22) / 12));
+  }
+  for (const [k, el] of labelPool) if (!live.has(k)) { el.remove(); labelPool.delete(k); }
+}
 
 // -------------------------------------------------------------------- input
 const ray = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
-// Ray against the terrain: intersect y=0, sample the height there, then
-// re-intersect at that height. Two corrections is plenty on relief this gentle.
 function pick(ev) {
   ndc.set((ev.clientX / innerWidth) * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1);
   ray.setFromCamera(ndc, camera);
@@ -768,18 +1175,22 @@ function apply(x, y) {
   touch(x, y);
   if (tool === 'coal' || tool === 'oil') { touch(x + 1, y); touch(x, y + 1); touch(x + 1, y + 1); rebuildPlants(); }
   if (tool === 'bulldoze') rebuildPlants();
+  prevBld[idx(x, y)] = city.bld[idx(x, y)];
   bldDirty = true;
   return true;
 }
 
-let painting = false, panning = false, panFrom = null, hoverTile = null;
+let painting = false, panning = false, panFrom = null;
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('pointerdown', ev => {
+  audio.start();
   if (!playing) return;
-  canvas.setPointerCapture(ev.pointerId);
+  try { canvas.setPointerCapture(ev.pointerId); } catch { /* synthetic event */ }
   if (ev.button === 2 || ev.button === 1) { panning = true; panFrom = { x: ev.clientX, y: ev.clientY }; return; }
+  const p = pick(ev);
+  if (tool === 'inspect') { if (p) showCard(p.x, p.y, ev.clientX, ev.clientY); return; }
   painting = true;
-  const p = pick(ev); if (p) apply(p.x, p.y);
+  if (p) apply(p.x, p.y);
 });
 canvas.addEventListener('pointermove', ev => {
   if (!playing) return;
@@ -799,8 +1210,7 @@ canvas.addEventListener('pointermove', ev => {
     cursor.position.set(p.x + 0.5, hAt(p.x, p.y) + 0.10, p.y + 0.5);
     cursor.visible = true;
     if (painting) apply(p.x, p.y);
-    hoverTile = p;
-  } else { cursor.visible = false; hoverTile = null; }
+  } else { cursor.visible = false; }
 });
 const endPointer = () => { painting = false; panning = false; panFrom = null; };
 canvas.addEventListener('pointerup', endPointer);
@@ -814,6 +1224,7 @@ canvas.addEventListener('wheel', ev => {
 const keys = new Set();
 addEventListener('keydown', ev => {
   const k = ev.key.toLowerCase();
+  audio.start();
   if (k === 'escape') {
     ev.preventDefault();
     if (!playing) return;
@@ -842,6 +1253,7 @@ function setSpeed(s) {
   for (const el of document.querySelectorAll('.sp')) el.classList.toggle('on', +el.dataset.sp === s);
 }
 for (const el of document.querySelectorAll('.sp')) el.onclick = () => setSpeed(+el.dataset.sp);
+for (const b of document.querySelectorAll('#ovr button')) b.onclick = () => setOverlay(b.dataset.o);
 
 // ---------------------------------------------------------------- bulletins
 const bullEl = document.getElementById('bulletins');
@@ -859,6 +1271,20 @@ const RANK_BLURB = {
   City: 'Height limits lifted to three storeys. Oil-fired generation approved.',
   Metropolis: 'The Commission commends the city to the State.',
 };
+// A district crossing into existence is worth a line of its own — it is the
+// city telling you it has decided a piece of itself is now a place.
+const knownDistricts = new Set();
+function noteDistricts() {
+  for (const d of city.districts) {
+    if (knownDistricts.has(d.anchor)) continue;
+    knownDistricts.add(d.anchor);
+    if (!playing || city.t < 20) continue;
+    const kind = d.zone === Z.R ? 'now counted as a neighbourhood'
+      : d.zone === Z.C ? 'now counted as a trading quarter'
+      : 'now counted as an industrial quarter';
+    bulletin(d.name, `${d.n} lots on the survey, ${kind}.`);
+  }
+}
 
 // -------------------------------------------------------------------- HUD
 const $ = id => document.getElementById(id);
@@ -888,11 +1314,11 @@ function updateHUD() {
   $('pwrVal').textContent = p.draw + ' / ' + p.supply;
   $('pwrLbl').textContent = p.short ? 'Generation short' : 'Generation';
   $('pwrLbl').classList.toggle('short', p.short);
-  $('season').textContent = SEASONS[Math.floor(city.t / 12) % 4];
+  const hour = Math.floor(dayT * 24);
+  $('season').textContent = SEASONS[Math.floor(city.t / 12) % 4] + ' · ' +
+    String(hour).padStart(2, '0') + ':00';
 
   if (city.rank !== lastRank) {
-    // Only while actually playing. Swapping in the title screen's throwaway map
-    // is a rank CHANGE too, and it would announce "Township" over the title.
     if (playing) {
       const title = S.MILESTONES[city.rank].title;
       bulletin(title, RANK_BLURB[title] || '');
@@ -919,12 +1345,16 @@ $('btnRollName').onclick = () => { $('inName').value = nameFor(rollSeed()); };
 $('btnBegin').onclick = () => {
   const seed = Math.abs(parseInt($('inSeed').value, 10) || 1955) % 1000000;
   const name = ($('inName').value || '').trim() || nameFor(seed);
+  knownDistricts.clear();
   startNew(name, seed);
 };
 $('btnNewBack').onclick = () => show('scrTitle');
 $('btnLoad').onclick = () => show('scrLoad');
 $('btnLoadBack').onclick = () => show('scrTitle');
-$('btnContinue').onclick = ev => { const id = ev.currentTarget.dataset.id; if (id) loadCity(id); };
+$('btnContinue').onclick = ev => {
+  const id = ev.currentTarget.dataset.id;
+  if (id) { knownDistricts.clear(); loadCity(id); }
+};
 $('btnSettingsT').onclick = () => { settingsFrom = 'scrTitle'; show('scrSettings'); };
 $('btnSettingsP').onclick = () => { settingsFrom = 'scrPause'; show('scrSettings'); };
 $('btnSetBack').onclick = () => show(settingsFrom);
@@ -937,7 +1367,7 @@ $('btnSaveAs').onclick = () => {
   const name = prompt('File the city under what name?', current.name);
   if (!name) return;
   if (saveCity(null, name.trim().slice(0, 26))) {
-    document.getElementById('mastName').textContent = current.name;
+    $('mastName').textContent = current.name;
     document.title = 'CROSSTOWN — ' + current.name;
     toast('City filed'); refreshPause();
   }
@@ -947,16 +1377,15 @@ $('btnQuit').onclick = () => {
 };
 
 // --------------------------------------------------------------------- loop
-// dt-driven throughout: a background tab throttles rAF, and anything built on
-// setTimeout would silently run the city at a different speed than the clock.
-let last = performance.now(), acc = 0, hudAcc = 0, autosaveAcc = 0;
+let last = performance.now(), acc = 0, hudAcc = 0, autosaveAcc = 0, waterAcc = 0;
 function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.25, (now - last) / 1000); last = now;
+  const active = playing && overlay.classList.contains('hide');
 
   if (!playing) {
     view.yaw += dt * 4.5;                     // slow turntable behind the title
-  } else if (overlay.classList.contains('hide')) {
+  } else if (active) {
     const a = view.yawNow * Math.PI / 180 + Math.PI / 4;
     const pv = view.zoomNow * 1.6 * dt;
     let fx = 0, fz = 0;
@@ -972,25 +1401,55 @@ function frame(now) {
     }
   }
 
+  if (SET.daynight && (active || !playing)) {
+    dayT = (dayT + dt / DAY_SEC * (playing ? Math.max(1, speed) : 1)) % 1;
+    applyDaylight();
+    if (Math.abs(nightness - litDrawn) > 0.045) bldDirty = true;
+  }
+
   const k = 1 - Math.pow(0.0022, dt);
   view.cx += (view.tx - view.cx) * k;
   view.cz += (view.tz - view.cz) * k;
   view.yawNow += (view.yaw - view.yawNow) * (playing ? k : 1);
   view.zoomNow += (ZOOMS[view.zoom] - view.zoomNow) * k;
   placeCamera();
+  cloudPlane.position.set(view.cx, 14, view.cz);
+  cloudTex.offset.x = (cloudTex.offset.x + dt * 0.0055) % 1;
+  cloudTex.offset.y = (cloudTex.offset.y + dt * 0.0026) % 1;
 
   if (playing && speed) {
     acc += dt * TICK_HZ * speed;
     let n = 0;
-    while (acc >= 1 && n < 8) { S.stepCity(city); acc -= 1; n++; bldDirty = true; }
+    while (acc >= 1 && n < 8) { S.stepCity(city); acc -= 1; n++; }
+    if (n) {
+      noteChanges();
+      noteDistricts();
+      bldDirty = true;
+      markStallChanges();
+      if (ovrMode !== 'none') { ovrAcc += dt; if (ovrAcc > 0.4) { paintOverlay(); ovrAcc = 0; } }
+    }
   }
 
+  waterAcc += dt;
+  if (waterAcc > 0.28 && waterTiles.length) {
+    waterAcc = 0; waterPhase += 1;
+    for (const i of waterTiles) dirtyTiles.add(i);
+  }
+
+  stepRubble(dt);
   stepSmoke(dt);
+  if (active) stepTraffic(dt);
   flushGround();
   if (bldDirty) rebuildBuildings();
+  stepRising(dt);
+  updateLabels();
 
   hudAcc += dt;
-  if (hudAcc > 0.12) { updateHUD(); hudAcc = 0; }
+  if (hudAcc > 0.12) {
+    updateHUD();
+    audio.update(hudAcc, { res: city.pop.res, jobsI: city.pop.jobsI, dayT, speed: playing ? speed : 0 });
+    hudAcc = 0;
+  }
 
   if (playing && SET.autosave && current.slotId && speed) {
     autosaveAcc += dt;
@@ -1000,18 +1459,36 @@ function frame(now) {
   renderer.render(scene, camera);
 }
 
+// Blockers appear and clear as the grid changes; the marks have to follow.
+const stallShadow = new Uint8Array(N);
+function markStallChanges() {
+  for (const i of city._zonedList) {
+    if (stallShadow[i] === city.stall[i]) continue;
+    stallShadow[i] = city.stall[i];
+    dirtyTiles.add(i);
+  }
+}
+
 // ---------------------------------------------------------------------- go
+setTool('road');
 applySettings();
+paintSky(true);
+applyDaylight();
 onResize();
 showTitle();
 requestAnimationFrame(frame);
 
-// Headless handle for tuning from the console, same entry point the test uses.
 window.CROSSTOWN = {
   get city() { return city; }, S,
-  // Rebuilds everything, not just the sim: a console session that pokes the
-  // grids directly bypasses the tool path that keeps the meshes in step.
-  sim: (n = 100) => { S.sim(city, n); paintAll(); rebuildPlants(); rebuildBuildings(); updateHUD(); return city.pop; },
+  sim: (n = 100) => {
+    S.sim(city, n); S.computeDistricts(city);
+    prevBld.set(city.bld); rising.clear();
+    paintAll(); rebuildPlants(); rebuildBuildings(); updateHUD();
+    return city.pop;
+  },
   refresh: () => { applyWorld(); updateHUD(); },
-  startNew, showTitle, saveCity, loadCity, listSlots, SET,
+  startNew, showTitle, saveCity, loadCity, listSlots, setOverlay, audio, SET,
+  get view() { return view; },
+  setDay: t => { dayT = t; applyDaylight(); paintSky(true); bldDirty = true; },
+  three: { scene, renderer, camera, carMesh, cars, get roadList() { return roadList; } },
 };

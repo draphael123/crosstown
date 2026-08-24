@@ -9,6 +9,25 @@ export const N = W * H;
 export const Z = { NONE: 0, R: 1, C: 2, I: 3 };
 export const T = { LAND: 0, WATER: 1, TREE: 2 };
 
+// Why a zoned lot is not building. Without this the failure is silent: a lot
+// three tiles too far from pavement looks exactly like one waiting its turn,
+// and the player has no way to tell those apart.
+export const STALL = {
+  OK: 0,          // growing, or about to
+  NO_ROAD: 1,     // no frontage within ROAD_REACH
+  NO_POWER: 2,    // current does not reach it
+  NO_DEMAND: 3,   // nobody wants this kind of building right now
+  CAPPED: 4,      // as tall as this land value allows — raise the value
+  FULL: 5,        // as tall as the city's charter allows
+};
+export const STALL_TEXT = {
+  1: 'No street frontage',
+  2: 'No current',
+  3: 'No demand',
+  4: 'Land value too low to build higher',
+  5: 'Built out',
+};
+
 export const idx = (x, y) => y * W + x;
 export const inBounds = (x, y) => x >= 0 && y >= 0 && x < W && y < H;
 
@@ -142,12 +161,16 @@ export function makeCity(seed = 1955) {
     bld: new Uint8Array(N),     // tier 0..3
     plant: new Uint8Array(N),   // 1 = coal footprint, 2 = oil footprint
     powered: new Uint8Array(N),
+    stall: new Uint8Array(N),
+    districts: [],
+    districtOf: new Uint8Array(N),   // 0 = none, else index into districts + 1
     roadDist: new Uint8Array(N).fill(255),
     lv: new Float32Array(N).fill(0.3),
     soot: new Float32Array(N),
     plants: [],                 // {x,y,kind}
     dirtyRoads: true,
     dirtyZones: true,
+    roadVersion: 0,
     _zonedList: [],
 
     t: 0,
@@ -341,6 +364,10 @@ function recomputeRoadDist(c) {
     frontier = next;
   }
   c.dirtyRoads = false;
+  // Bumped rather than flagged: anything downstream that caches the road graph
+  // can compare a number it owns instead of trusting every caller to have set a
+  // flag. A console session poking the grids directly gets it right for free.
+  c.roadVersion++;
 }
 
 // ------------------------------------------------------------------- power
@@ -509,6 +536,93 @@ function growthPass(c) {
   }
 }
 
+// Same tests the growth pass applies, run over every zoned lot so the map can
+// show them. Kept next to growthPass deliberately: if one changes and the other
+// does not, the game starts lying to the player about its own rules.
+function markStalls(c) {
+  const s = c.stall;
+  for (const i of c._zonedList) {
+    const z = c.zone[i];
+    if (!z) { s[i] = STALL.OK; continue; }
+    if (c.roadDist[i] > ROAD_REACH) { s[i] = STALL.NO_ROAD; continue; }
+    const lit = c.bld[i] > 0 ? c.powered[i] === 1 : nearPower(c, i);
+    if (!lit) { s[i] = STALL.NO_POWER; continue; }
+    const ceil = tierCeiling(c, i);
+    if (c.bld[i] >= ceil) {
+      s[i] = ceil >= c.maxTier ? STALL.FULL : STALL.CAPPED;
+      continue;
+    }
+    const d = z === Z.R ? c.demand.r : z === Z.C ? c.demand.c : c.demand.i;
+    s[i] = d > 0.05 ? STALL.OK : STALL.NO_DEMAND;
+  }
+}
+
+// ---------------------------------------------------------------- districts
+// A district is a contiguous mass of buildings OF ONE KIND. Flooding over all
+// built tiles regardless of zone would swallow the whole road-connected city
+// into a single blob and name it once; splitting by zone gives you the terraces,
+// downtown and the works as separate places, which is how anyone talks about a
+// town anyway.
+const DIST_MIN = 14;          // built lots before a cluster earns a name
+const DIST_GAP = 2;           // Chebyshev gap still counted as the same mass
+const DIST_EVERY = 24;        // ticks between recomputes
+
+const DIST_STEM = ['Ashland', 'Corliss', 'Marlow', 'Wheeler', 'Kessler', 'Brant',
+  'Locust', 'Verity', 'Draeger', 'Hollis', 'Camden', 'Pemberton', 'Stillman',
+  'Ranney', 'Ambler', 'Sherwood', 'Fairmont', 'Delano'];
+const DIST_FORM = {
+  [Z.R]: ['{} Terrace', '{} Heights', '{} Row', 'The {} Homes', '{} Park', 'Old {}'],
+  [Z.C]: ['{} Square', '{} Street', 'The {} Blocks', 'Downtown {}', '{} Exchange'],
+  [Z.I]: ['The {} Works', '{} Yards', '{} Flats', 'The {} Shops', '{} Sidings'],
+};
+// Named off the lowest tile index in the mass, not the centroid: a centroid
+// drifts as the district grows and the place would keep renaming itself.
+function districtName(z, anchor) {
+  let h = (anchor * 2654435761) >>> 0; h ^= h >>> 13;
+  const forms = DIST_FORM[z];
+  return forms[(h >>> 0) % forms.length].replace('{}', DIST_STEM[(h >>> 7) % DIST_STEM.length]);
+}
+
+export function computeDistricts(c) {
+  const seen = new Uint8Array(N);
+  const out = [];
+  const stack = [];
+  const member = c.districtOf;
+  member.fill(0);
+  const cells = [];
+  for (const start of c._zonedList) {
+    if (seen[start] || !c.bld[start]) continue;
+    const z = c.zone[start];
+    if (!z) continue;
+    seen[start] = 1; stack.length = 0; stack.push(start);
+    cells.length = 0;
+    let n = 0, sx = 0, sy = 0, anchor = start, pop = 0;
+    while (stack.length) {
+      const i = stack.pop();
+      const x = i % W, y = (i / W) | 0;
+      n++; sx += x; sy += y; cells.push(i);
+      pop += CAP[z][c.bld[i]];
+      if (i < anchor) anchor = i;
+      for (let dy = -DIST_GAP; dy <= DIST_GAP; dy++) for (let dx = -DIST_GAP; dx <= DIST_GAP; dx++) {
+        if (!dx && !dy) continue;
+        const nx = x + dx, ny = y + dy;
+        if (!inBounds(nx, ny)) continue;
+        const j = idx(nx, ny);
+        if (seen[j] || c.zone[j] !== z || !c.bld[j]) continue;
+        seen[j] = 1; stack.push(j);
+      }
+    }
+    if (n < DIST_MIN) continue;
+    // 255 districts is far more than any map produces, and a byte per tile
+    // keeps the lookup free for the query tool.
+    if (out.length < 255) { const tag = out.length + 1; for (const i of cells) member[i] = tag; }
+    out.push({ zone: z, n, pop, x: sx / n, y: sy / n, anchor, name: districtName(z, anchor) });
+  }
+  c.districts = out;
+  return out;
+}
+export const districtAt = (c, i) => c.districts[c.districtOf[i] - 1] || null;
+
 function rebuildZonedList(c) {
   if (!c.dirtyZones) return;
   const list = [];
@@ -565,7 +679,9 @@ export function stepCity(c) {
   growthPass(c);
   recomputePower(c);
   tally(c);
+  markStalls(c);
   checkRank(c);
+  if (c.t % DIST_EVERY === 0) computeDistricts(c);
   if (c.t > 0 && c.t % QUARTER === 0) budget(c);
   c.t++;
   return c;

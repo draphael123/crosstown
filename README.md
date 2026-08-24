@@ -60,9 +60,44 @@ The growth RNG keeps its state on the city rather than in a closure, so a
 resumed save continues on the exact die roll it was suspended on — test 10
 runs both copies 120 ticks past the save point and requires they still match.
 
-Settings: shadows, render detail, distance haze, stack smoke, lot lines,
-autosave. Fog and shadows are compiled into the shader, so toggling either
+Settings: day and night, traffic, sound, shadows, render detail, distance haze,
+stack smoke, lot lines, autosave. Fog and shadows are compiled into the shader, so toggling either
 forces a material rebuild — without it the switch appears to do nothing.
+
+## Making it feel alive
+
+Traffic wanders the road graph — no pathfinding, a car just holds two tiles and
+a fraction and picks a neighbour that is not where it came from. Buildings rise
+over about a second instead of appearing, and leave dust on the lot on the way
+down. Cloud shadows drift, the river runs in bands, coal stacks smoke, and the
+light moves through a day while the year stays 1955.
+
+Two things worth knowing if you touch the lighting. `instanceColor` only
+multiplies **diffuse**, so a "lit window" colour is still dim under a dim lamp —
+the glow has to come from `emissive`, which is uniform per mesh, so it must stay
+low or it erases the Lambert shading and the town turns into paper cutouts. And
+the reason night first looked flat was not darkness, it was the **missing key
+light**: with only a hemisphere lamp a box gets nearly the same value on every
+vertical face. Daylight is floored at 0.34 so the sky can go properly dark while
+the city stays legible.
+
+## Telling the player what is happening
+
+Every zoned lot carries a stall reason — no frontage, no current, no demand,
+capped by land value, built out. Hard blockers get a coloured tick on the lot;
+`markStalls` deliberately sits next to `growthPass` and applies the same tests,
+because if one changes and the other does not the game starts lying about its
+own rules.
+
+Survey sheets (land value, current, smoke) draw through `ImageData` at one texel
+per tile and share the ground's displaced geometry, so they drape over the
+relief for free. The Inspect tool gives any tile an index card.
+
+Districts are contiguous masses of buildings **of one kind** — flooding over all
+built tiles regardless of zone swallows the whole road-connected city into one
+blob and names it once. Names derive from the lowest tile index in the mass, not
+the centroid, because a centroid drifts as the district grows and the place
+would keep renaming itself.
 
 ## Two things the tests found
 

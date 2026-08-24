@@ -7,7 +7,7 @@
 
 import {
   makeCity, sim, setRoad, setLine, setZone, placePlant, bulldoze,
-  tierCeiling, serialize, deserialize, idx, Z, T, W, H, N, MILESTONES,
+  tierCeiling, serialize, deserialize, computeDistricts, idx, Z, T, W, H, N, MILESTONES, STALL,
 } from '../src/sim.js';
 
 let failures = 0;
@@ -290,6 +290,82 @@ head('10. save/load round trip — and the loaded city runs on the same dice');
     'and 120 ticks later the two runs are still the same city', `${K.pop.res} vs ${L.pop.res}`);
   ok(JSON.stringify(blob).length < 400 * 1024, 'the save is small enough for localStorage',
     `${(JSON.stringify(blob).length / 1024) | 0}kb`);
+}
+
+// ================================== 11. the map can say why a lot won't build
+head('11. stall reasons — each failing rule reports itself, not silence');
+{
+  // No frontage: zone a field, wire it for power, lay no streets at all.
+  const P1 = makeCity(1955);
+  const a = findDry(P1, 24);
+  P1.funds = 1e9;
+  for (let y = a.y; y < a.y + 14; y++) for (let x = a.x; x < a.x + 14; x++) setZone(P1, x, y, Z.R);
+  placePlant(P1, a.x + 6, a.y + 6, 'coal');
+  sim(P1, 30);
+  ok(P1.stall[idx(a.x + 1, a.y + 1)] === STALL.NO_ROAD, 'a lot with no street reports NO_ROAD',
+    `got ${P1.stall[idx(a.x + 1, a.y + 1)]}`);
+
+  // No current: a proper gridiron town with no generating station at all.
+  const P2 = makeCity(1955);
+  const s2 = findSite(P2, 20);
+  buildTown(P2, s2, thirds(20), { plants: 0 });
+  sim(P2, 30);
+  ok(P2.stall[idx(s2.x + 2, s2.y + 2)] === STALL.NO_POWER, 'a lot with no plant reports NO_POWER',
+    `got ${P2.stall[idx(s2.x + 2, s2.y + 2)]}`);
+
+  // No demand: an all-residential town that has stalled for want of work. Its
+  // empty lots are served and lit — the only thing missing is anyone wanting one.
+  const P3 = makeCity(1955);
+  const s3 = findSite(P3, 28);
+  buildTown(P3, s3, allR);
+  sim(P3, 300);
+  let noDemand = 0, total = 0;
+  for (const i of P3._zonedList) {
+    if (P3.bld[i]) continue;
+    total++;
+    if (P3.stall[i] === STALL.NO_DEMAND) noDemand++;
+  }
+  console.log(`        stalled all-R town: ${noDemand}/${total} empty lots blame demand`);
+  ok(noDemand > total * 0.5, 'most empty lots in the stalled town blame demand',
+    `${noDemand}/${total}`);
+
+  // Capped vs full: a built-out town at tier 2 with the gate open to 3 should
+  // report CAPPED where land value holds it down, FULL where nothing more is possible.
+  const P4 = makeCity(1955);
+  buildTown(P4, findSite(P4, 28), thirds(28));
+  sim(P4, 400);
+  const counts = [0, 0, 0, 0, 0, 0];
+  for (const i of P4._zonedList) if (P4.bld[i]) counts[P4.stall[i]]++;
+  console.log(`        built lots by reason: ok ${counts[0]} road ${counts[1]} power ${counts[2]} demand ${counts[3]} capped ${counts[4]} full ${counts[5]}`);
+  ok(counts[STALL.CAPPED] > 0, 'some lots report being capped by land value', `n=${counts[STALL.CAPPED]}`);
+  ok(counts[STALL.FULL] > 0, 'and some report being built out', `n=${counts[STALL.FULL]}`);
+  ok(counts[STALL.NO_ROAD] === 0 && counts[STALL.NO_POWER] === 0,
+    'no standing building claims it lacks a street or current');
+}
+
+// ======================================== 12. the city names its own districts
+head('12. districts — a grown town names its parts, and the names hold still');
+{
+  const D2 = makeCity(1955);
+  const s = findSite(D2, 28);
+  buildTown(D2, s, thirds(28));
+  sim(D2, 400);
+  const ds = computeDistricts(D2);
+  console.log('        ' + ds.map(d => `${d.name} (${d.n} lots)`).join('   '));
+  ok(ds.length >= 3, 'the mixed town produced at least three named districts', `n=${ds.length}`);
+  ok(ds.every(d => d.n >= 14), 'no district is below the minimum size');
+  const zones = new Set(ds.map(d => d.zone));
+  ok(zones.size === 3, 'residential, commercial and industrial each got their own',
+    `zones=${[...zones].join(',')}`);
+  ok(new Set(ds.map(d => d.name)).size === ds.length, 'every district has a distinct name');
+
+  // Names must not wander as the district grows, or the place renames itself
+  // every few seconds and stops being a place.
+  const before = ds.map(d => d.name).sort().join('|');
+  sim(D2, 200);
+  const after = computeDistricts(D2).map(d => d.name).sort().join('|');
+  console.log(`        after 200 more ticks: ${after === before ? 'unchanged' : after}`);
+  ok(after === before, 'the names are the same 200 ticks later');
 }
 
 console.log('\n' + (failures ? `${failures} FAILED` : 'all passed'));

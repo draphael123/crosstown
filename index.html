@@ -107,6 +107,37 @@
   .bull .b { font-size:11px; color:var(--ink2); margin-top:2px; letter-spacing:.02em; }
   @keyframes drop { from { opacity:0; transform:translateY(-14px) rotate(-1deg); } to { opacity:1; } }
 
+  /* ------------------------------------------------------- survey overlays */
+  .ovr { display:grid; grid-template-columns:repeat(4,1fr); gap:3px; }
+  .ovr button { font-family:var(--disp); font-size:9px; font-weight:600; letter-spacing:.09em;
+    text-transform:uppercase; background:rgba(255,255,255,.30); border:1px solid var(--rule);
+    padding:4px 2px; cursor:pointer; }
+  .ovr button:hover { background:rgba(255,255,255,.62); }
+  .ovr button.on { background:var(--mimeo); color:#eef2ff; border-color:var(--mimeo); }
+
+  /* ------------------------------------------------------------ index card */
+  #card { position:fixed; z-index:9; width:206px; padding:8px 12px 10px 16px; display:none; }
+  #card.show { display:block; }
+  #cardAddr { font-family:var(--disp); font-size:13px; font-weight:600; letter-spacing:.09em;
+    text-transform:uppercase; line-height:1.15; }
+  #cardDist { font-size:9px; letter-spacing:.10em; color:var(--ink2); text-transform:uppercase; margin-top:1px; }
+  #cardRule { height:1px; background:var(--rule); margin:6px 0; }
+  #card .cr { display:flex; justify-content:space-between; gap:8px; font-size:10px; margin:2px 0; }
+  #card .cr span { color:var(--ink2); letter-spacing:.06em; text-transform:uppercase; }
+  #card .cr b { font-weight:700; font-variant-numeric:tabular-nums; text-align:right; }
+  #cardWhy { margin-top:6px; padding-top:5px; border-top:1px dotted rgba(120,105,70,.55);
+    font-size:10px; letter-spacing:.03em; }
+  #cardWhy.bad { color:var(--stamp); font-weight:700; }
+  #cardWhy.warn { color:var(--amber); }
+
+  /* --------------------------------------------------------- district names */
+  #labels { position:fixed; inset:0; z-index:5; pointer-events:none; overflow:hidden; }
+  .dlab { position:absolute; transform:translate(-50%,-50%); white-space:nowrap;
+    font-family:var(--disp); font-weight:600; font-size:11px; letter-spacing:.22em;
+    text-transform:uppercase; color:rgba(38,32,20,.82);
+    text-shadow:0 1px 0 rgba(244,238,218,.75), 0 0 8px rgba(244,238,218,.85);
+    transition:opacity .4s; }
+
   #help { position:fixed; z-index:6; left:50%; transform:translateX(-50%); bottom:66px;
     font-size:10px; letter-spacing:.10em; color:rgba(26,32,24,.72); text-transform:uppercase;
     text-shadow:0 1px 0 rgba(240,235,215,.45), 0 0 6px rgba(240,235,215,.55); pointer-events:none; }
@@ -226,7 +257,14 @@
   </div>
 
   <div id="gauges" class="paper">
-    <div class="ttl">Demand &amp; Service</div>
+    <div class="ttl">Survey Sheets</div>
+    <div class="ovr" id="ovr">
+      <button data-o="none" class="on">Plain</button>
+      <button data-o="value">Value</button>
+      <button data-o="power">Current</button>
+      <button data-o="smoke">Smoke</button>
+    </div>
+    <div class="ttl" style="margin-top:9px">Demand &amp; Service</div>
     <div class="dem"><i>R</i><div class="bar"><div class="fill" id="dR"></div><div class="mid"></div></div></div>
     <div class="dem"><i>C</i><div class="bar"><div class="fill" id="dC"></div><div class="mid"></div></div></div>
     <div class="dem"><i>I</i><div class="bar"><div class="fill" id="dI"></div><div class="mid"></div></div></div>
@@ -243,8 +281,18 @@
     <div id="season">Spring</div>
   </div>
 
-  <div id="help">drag to draw &nbsp;·&nbsp; right-drag or WASD to pan &nbsp;·&nbsp; Q / E rotate &nbsp;·&nbsp; Z / X zoom &nbsp;·&nbsp; 1-9 tools &nbsp;·&nbsp; Esc menu</div>
+  <div id="help">drag to draw &nbsp;·&nbsp; right-drag or WASD to pan &nbsp;·&nbsp; Q / E rotate &nbsp;·&nbsp; Z / X zoom &nbsp;·&nbsp; 1-0 tools &nbsp;·&nbsp; Esc menu</div>
+
+  <div id="card" class="paper">
+    <div id="cardAddr">—</div>
+    <div id="cardDist">—</div>
+    <div id="cardRule"></div>
+    <div id="cardRows"></div>
+    <div id="cardWhy"></div>
+  </div>
 </div>
+
+<div id="labels"></div>
 
 <div id="bulletins"></div>
 <div id="toast"></div>
