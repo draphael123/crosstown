@@ -173,6 +173,31 @@ light**: with only a hemisphere lamp a box gets nearly the same value on every
 vertical face. Daylight is floored at 0.34 so the sky can go properly dark while
 the city stays legible.
 
+## Getting down to the pavement
+
+Six zoom steps rather than four, and **Tab** (or the Street button) drops you to
+eye height on the nearest piece of pavement, facing along the street. Drag to
+look, WASD to walk, Shift to hurry, **R** to ride along with a passing car.
+
+A separate `PerspectiveCamera`, not the isometric one pushed in close: an
+orthographic camera at eye height has no perspective at all, which is exactly
+the thing that makes standing in a street feel like standing. The fog range
+swaps with it — 150-420 is right for a camera 150 units out and puts the haze
+past the edge of the world when your eye is at 0.26.
+
+Pedestrians walk the kerbs on the same wander the cars use, and flocks of birds
+turn on lazy circles overhead — the first thing in the scene that moves without
+the player having built it.
+
+The ground carries a **detail layer** tiled once per lot and multiplied into its
+colour. The tile map is 4 texels per lot, which is fine from the air and becomes
+acres of flat wash the moment you stand on it — and flat wash is most of what
+makes a rendered landscape look synthetic.
+
+One bug worth recording: `roadList` was refreshed only inside `stepTraffic`, so
+turning traffic off in settings left it permanently stale and Street level set
+you down in the middle of a field.
+
 ## Telling the player what is happening
 
 Every zoned lot carries a stall reason — no frontage, no current, no demand,

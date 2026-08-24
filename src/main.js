@@ -49,6 +49,12 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 const FOG = new THREE.Fog(0xa8bfcc, 150, 420);
+// The iso camera sits 150 units out, so its haze must start beyond that. At eye
+// height the same numbers put the fog past the edge of the world.
+function setFogFor(m) {
+  if (m === 'iso') { FOG.near = 150; FOG.far = 420; }
+  else { FOG.near = 6; FOG.far = 105; }
+}
 
 const sun = new THREE.DirectionalLight(0xfff2d6, 2.05);
 sun.castShadow = true;
@@ -145,8 +151,21 @@ let sunAz = 0, sunEl = 1;
 
 // ------------------------------------------------------------------ camera
 const camera = new THREE.OrthographicCamera(-30, 30, 30, -30, 0.1, 500);
-const ZOOMS = [16, 26, 42, 66];
-const view = { yaw: 0, yawNow: 0, zoom: 2, zoomNow: ZOOMS[2], cx: W / 2, cz: H / 2, tx: W / 2, tz: H / 2 };
+// Two more steps at the close end than before: at 16 you could see that streets
+// had cars on them, but not watch one.
+const ZOOMS = [7, 11, 16, 26, 42, 66];
+const DEFAULT_ZOOM = 4;
+const view = { yaw: 0, yawNow: 0, zoom: DEFAULT_ZOOM, zoomNow: ZOOMS[DEFAULT_ZOOM], cx: W / 2, cz: H / 2, tx: W / 2, tz: H / 2 };
+
+// Street level. A separate perspective camera rather than the iso one pushed in
+// close: an orthographic camera at eye height has no perspective at all, which
+// is exactly the thing that makes standing in a street feel like standing.
+const EYE = 0.26;                                   // ~2m at this map's scale
+const camPersp = new THREE.PerspectiveCamera(64, 1, 0.02, 420);
+let mode = 'iso';
+const walk = { x: W / 2, z: H / 2, yaw: 0, pitch: -0.05, ride: null };
+const activeCam = () => (mode === 'iso' ? camera : camPersp);
+const inB = (x, y) => x >= 0 && y >= 0 && x < W && y < H;
 const PITCH = 34 * Math.PI / 180;
 const CAM_DIST = 150;
 
@@ -161,6 +180,36 @@ function placeCamera() {
   camera.left = -k * ar; camera.right = k * ar; camera.top = k; camera.bottom = -k;
   camera.updateProjectionMatrix();
 }
+function placeWalkCamera() {
+  const tx = Math.max(0, Math.min(W - 1, Math.floor(walk.x)));
+  const tz = Math.max(0, Math.min(H - 1, Math.floor(walk.z)));
+  let ex = walk.x, ez = walk.z, ey = padH(tx, tz) + EYE, yaw = walk.yaw, pitch = walk.pitch;
+  if (walk.ride) {
+    const c = walk.ride;
+    if (!cars.includes(c)) walk.ride = null;
+    else {
+      const fx = c.from % W, fy = (c.from / W) | 0, tx2 = c.to % W, ty2 = (c.to / W) | 0;
+      const dx = tx2 - fx, dz = ty2 - fy;
+      ex = fx + 0.5 + dx * c.p - dz * 0.17;
+      ez = fy + 0.5 + dz * c.p + dx * 0.17;
+      ey = hAt(fx, fy) + (hAt(tx2, ty2) - hAt(fx, fy)) * c.p + 0.20;
+      // rotateY(t) sends -Z to (-sin t, -cos t), so facing (dx,dz) is
+      // atan2(-dx,-dz). With atan2(dx,dz) you ride backwards down the street.
+      yaw = Math.atan2(-dx, -dz);
+      pitch = -0.06;
+      walk.x = ex; walk.z = ez;
+    }
+  }
+  camPersp.position.set(ex, ey, ez);
+  camPersp.rotation.set(0, 0, 0);
+  camPersp.rotateY(yaw);
+  camPersp.rotateX(pitch);
+  camPersp.aspect = innerWidth / innerHeight;
+  camPersp.updateProjectionMatrix();
+  sun.target.position.set(ex, 0, ez);
+  sun.position.set(ex + Math.cos(sunAz) * 72, Math.max(9, sunEl * 86), ez + Math.sin(sunAz) * 54);
+}
+
 function onResize() {
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2) * (SET.scale ? 1 : 0.55));
   renderer.setSize(innerWidth, innerHeight, false);
@@ -351,9 +400,57 @@ function flushGround() {
   gTex.tex.needsUpdate = true;
 }
 
+// A detail layer, tiled once per lot and multiplied into the ground colour.
+// The tile map is only 4 texels per lot, which is fine from the air and turns
+// into acres of flat wash the moment you stand on it — and flat wash is most of
+// what makes a rendered landscape look synthetic.
+const detailTex = (() => {
+  const n = 128, cv = document.createElement('canvas');
+  cv.width = cv.height = n;
+  const g = cv.getContext('2d');
+  const img = g.createImageData(n, n);
+  // Value noise at two frequencies plus per-texel grain: the low frequency
+  // gives patches of wear, the grain keeps it from banding.
+  const lat = (m, seed) => {
+    const r = S.mulberry32(seed), a = new Float32Array(m * m);
+    for (let i = 0; i < a.length; i++) a[i] = r();
+    return { n: m, a };
+  };
+  const L1 = lat(8, 0xd57a11), L2 = lat(23, 0x51ee);
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    const u = x / n, v = y / n;
+    const lo = latAt(L1, u, v), hi = latAt(L2, u, v);
+    const grain = Math.random();
+    const val = 0.52 * lo + 0.30 * hi + 0.18 * grain;
+    const c = Math.round(120 + val * 135);
+    const o = (y * n + x) * 4;
+    img.data[o] = img.data[o + 1] = img.data[o + 2] = c;
+    img.data[o + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+})();
+
 const groundGeo = new THREE.PlaneGeometry(W, H, W, H);
 groundGeo.rotateX(-Math.PI / 2);
-const ground = new THREE.Mesh(groundGeo, new THREE.MeshLambertMaterial({ map: gTex.tex }));
+const groundMat = new THREE.MeshLambertMaterial({ map: gTex.tex });
+groundMat.onBeforeCompile = sh => {
+  sh.uniforms.uDetail = { value: detailTex };
+  sh.uniforms.uDetailScale = { value: W * 1.5 };
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>',
+      '#include <common>\nuniform sampler2D uDetail;\nuniform float uDetailScale;')
+    // vMapUv is three r160's varying for a material that has a map; reusing it
+    // avoids adding a varying and keeps this to a two-line patch.
+    .replace('#include <map_fragment>',
+      '#include <map_fragment>\n'
+      + 'float det = texture2D( uDetail, vMapUv * uDetailScale ).r;\n'
+      + 'diffuseColor.rgb *= 0.80 + 0.34 * det;');
+};
+const ground = new THREE.Mesh(groundGeo, groundMat);
 ground.position.set(W / 2, 0, H / 2);
 ground.receiveShadow = true;
 scene.add(ground);
@@ -855,6 +952,12 @@ function refreshRoadList() {
   for (let i = 0; i < N; i++) if (city.road[i]) roadList.push(i);
   roadVer = city.roadVersion;
 }
+// The road list is not the traffic system's private property. It used to be
+// refreshed only inside stepTraffic, so turning traffic off in settings left it
+// permanently stale and Street level set you down in the middle of a field.
+function ensureRoadList() {
+  if (city.roadVersion !== roadVer) { refreshRoadList(); rebuildBridges(); }
+}
 function roadNext(from, notThis) {
   const x = from % W, y = (from / W) | 0;
   const opts = [];
@@ -877,7 +980,7 @@ function spawnCar() {
 }
 function stepTraffic(dt) {
   if (!SET.traffic) { carMesh.count = 0; return; }
-  if (city.roadVersion !== roadVer) { refreshRoadList(); rebuildBridges(); }
+  ensureRoadList();
   const busy = city.pop.res + city.pop.jobsC + city.pop.jobsI;
   const target = Math.min(CAR_MAX, Math.round(busy / 42));
   while (cars.length > target) cars.pop();
@@ -925,6 +1028,122 @@ function stepTraffic(dt) {
   carMesh.count = k;
   carMesh.instanceMatrix.needsUpdate = true;
   if (carMesh.instanceColor) carMesh.instanceColor.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------- pedestrians
+// Same wander as the cars but on the kerb and at walking pace. They are the
+// reason street level is worth going down to — an empty pavement reads as a
+// model of a town rather than a town.
+const PED_MAX = 320;
+const pedMesh = new THREE.InstancedMesh(
+  mergeGeos([box(.075, .135, .075), box(.062, .062, .062, 0, .135)]),
+  new THREE.MeshLambertMaterial(), PED_MAX);
+pedMesh.frustumCulled = false; pedMesh.castShadow = true; pedMesh.count = 0;
+scene.add(pedMesh);
+const PED_COL = ['#3a3f47', '#6b6257', '#8a5a48', '#2f4356', '#7d7468', '#4a5a45', '#9a8e78', '#55504a'];
+const peds = [];
+function spawnPed() {
+  if (!roadList.length) return null;
+  const from = roadList[(Math.random() * roadList.length) | 0];
+  const to = roadNext(from, -1);
+  if (to < 0) return null;
+  return { from, to, p: Math.random(), spd: 0.30 + Math.random() * 0.22,
+    side: Math.random() < 0.5 ? 1 : -1, col: PED_COL[(Math.random() * PED_COL.length) | 0] };
+}
+function stepPeds(dt) {
+  if (!SET.traffic) { pedMesh.count = 0; return; }
+  const target = Math.min(PED_MAX, Math.round(city.pop.res / 55));
+  while (peds.length > target) peds.pop();
+  for (let k = 0; k < 20 && peds.length < target; k++) {
+    const p = spawnPed();
+    if (!p) break;
+    peds.push(p);
+  }
+  let k = 0;
+  for (const q of peds) {
+    q.p += dt * q.spd;
+    let guard = 0;
+    while (q.p >= 1 && guard++ < 4) {
+      q.p -= 1;
+      const prev = q.from;
+      q.from = q.to;
+      q.to = roadNext(q.from, prev);
+      if (q.to < 0) { q.to = q.from; q.p = 0; break; }
+    }
+    if (!city.road[q.from] || !city.road[q.to]) {
+      const n = spawnPed(); if (!n) continue;
+      q.from = n.from; q.to = n.to; q.p = 0;
+    }
+    const fx = q.from % W, fy = (q.from / W) | 0;
+    const tx = q.to % W, ty = (q.to / W) | 0;
+    const dx = tx - fx, dz = ty - fy;
+    const ox = -dz * 0.36 * q.side, oz = dx * 0.36 * q.side;
+    const yh = hAt(fx, fy) + (hAt(tx, ty) - hAt(fx, fy)) * q.p + 0.01;
+    // A little bob, so a crowd does not glide like chess pieces.
+    const bob = Math.abs(Math.sin((q.p + q.spd) * Math.PI * 6)) * 0.012;
+    _q.setFromAxisAngle(YAXIS, Math.atan2(-dz, dx));
+    _v.set(fx + 0.5 + dx * q.p + ox, yh + bob, fy + 0.5 + dz * q.p + oz);
+    _sc.set(1, 1, 1);
+    _m.compose(_v, _q, _sc);
+    pedMesh.setMatrixAt(k, _m);
+    _col.set(q.col);
+    if (nightness > 0.3) _col.multiplyScalar(0.7);
+    pedMesh.setColorAt(k, _col);
+    k++;
+  }
+  pedMesh.count = k;
+  pedMesh.instanceMatrix.needsUpdate = true;
+  if (pedMesh.instanceColor) pedMesh.instanceColor.needsUpdate = true;
+}
+
+// --------------------------------------------------------------------- birds
+// Flocks on lazy circles. Cheap, and the first thing in the scene that moves
+// without the player having built it.
+const BIRD_FLOCKS = 5, BIRD_PER = 11;
+const birdMesh = (() => {
+  const m = new THREE.InstancedMesh(
+    mergeGeos([box(.10, .012, .028), box(.028, .012, .11)]),   // a crude cross
+    new THREE.MeshLambertMaterial({ color: 0x2e3138 }), BIRD_FLOCKS * BIRD_PER);
+  m.frustumCulled = false; m.count = BIRD_FLOCKS * BIRD_PER;
+  scene.add(m);
+  return m;
+})();
+const flocks = [];
+function seedFlocks() {
+  flocks.length = 0;
+  for (let f = 0; f < BIRD_FLOCKS; f++) {
+    const r = S.mulberry32(city.seed ^ (0xb1d + f * 977));
+    flocks.push({
+      cx: 20 + r() * (W - 40), cz: 20 + r() * (H - 40),
+      rad: 5 + r() * 9, h: 5 + r() * 7, phase: r() * TAU,
+      spd: 0.09 + r() * 0.08, drift: r() * TAU,
+    });
+  }
+}
+function stepBirds(dt, now) {
+  let k = 0;
+  for (const f of flocks) {
+    f.phase += dt * f.spd;
+    f.cx += Math.cos(f.drift) * dt * 0.35;
+    f.cz += Math.sin(f.drift) * dt * 0.35;
+    if (f.cx < 10 || f.cx > W - 10 || f.cz < 10 || f.cz > H - 10) f.drift += Math.PI * 0.55;
+    for (let b = 0; b < BIRD_PER; b++) {
+      const a = f.phase + b * 0.42;
+      const rr = f.rad * (0.72 + 0.28 * Math.sin(b * 1.7));
+      const x = f.cx + Math.cos(a) * rr;
+      const z = f.cz + Math.sin(a) * rr * 0.8;
+      const y = f.h + Math.sin(a * 2.1 + b) * 0.5;
+      _q.setFromAxisAngle(YAXIS, -a + Math.PI / 2);
+      // Wingbeat, as a squash on the cross rather than real wings.
+      const beat = 0.7 + 0.5 * Math.abs(Math.sin(now * 6 + b * 1.3));
+      _v.set(x, y, z);
+      _sc.set(1, beat, 1);
+      _m.compose(_v, _q, _sc);
+      birdMesh.setMatrixAt(k++, _m);
+    }
+  }
+  birdMesh.count = k;
+  birdMesh.instanceMatrix.needsUpdate = true;
 }
 
 // ------------------------------------------------------------ cloud shadows
@@ -1064,6 +1283,8 @@ function applyWorld() {
   reshapeGround();
   paintAll();
   computeFarmSites();
+  seedFlocks();
+  peds.length = 0;
   rebuildBridges();
   rebuildTrees();
   rebuildPlants();
@@ -1091,6 +1312,7 @@ const OPTS = [
 function applySettings() {
   renderer.shadowMap.enabled = !!SET.shadows;
   scene.fog = SET.haze ? FOG : null;
+  setFogFor(mode);
   smokeGroup.visible = !!SET.smoke;
   cloudPlane.visible = !!SET.haze;
   audio.setEnabled(!!SET.sound);
@@ -1233,11 +1455,12 @@ function toast(msg) {
 }
 
 function enterCity() {
+  if (mode === 'street') leaveStreet();
   applyWorld();
   document.getElementById('mastName').textContent = current.name;
   document.title = 'CROSSTOWN — ' + current.name;
   view.cx = view.tx = W / 2; view.cz = view.tz = H / 2;
-  view.yaw = 0; view.yawNow = 0; view.zoom = 2; view.zoomNow = ZOOMS[2];
+  view.yaw = 0; view.yawNow = 0; view.zoom = DEFAULT_ZOOM; view.zoomNow = ZOOMS[DEFAULT_ZOOM];
   lastRank = city.rank;
   playing = true;
   setSpeed(1);
@@ -1253,6 +1476,7 @@ function startNew(name, seed) {
   enterCity();
 }
 function showTitle() {
+  if (mode === 'street') leaveStreet();
   playing = false;
   bullEl.innerHTML = '';
   labelsEl.innerHTML = ''; labelPool.clear();
@@ -1262,7 +1486,7 @@ function showTitle() {
   lastRank = city.rank;
   applyWorld();
   view.cx = view.tx = W / 2; view.cz = view.tz = H / 2;
-  view.zoom = 1; view.zoomNow = ZOOMS[1];
+  view.zoom = 3; view.zoomNow = ZOOMS[3];
   cursor.visible = false;
   setOverlay('none');
   show('scrTitle');
@@ -1387,7 +1611,7 @@ const labelsEl = document.getElementById('labels');
 const labelPool = new Map();
 const _proj = new THREE.Vector3();
 function updateLabels() {
-  if (!playing || !overlay.classList.contains('hide')) { labelsEl.style.display = 'none'; return; }
+  if (!playing || mode === 'street' || !overlay.classList.contains('hide')) { labelsEl.style.display = 'none'; return; }
   labelsEl.style.display = '';
   const live = new Set();
   for (const d of city.districts) {
@@ -1400,7 +1624,7 @@ function updateLabels() {
       labelPool.set(d.anchor, el);
     }
     if (el.textContent !== d.name) el.textContent = d.name;
-    _proj.set(d.x + 0.5, hAt(Math.round(d.x), Math.round(d.y)) + 2.6, d.y + 0.5).project(camera);
+    _proj.set(d.x + 0.5, hAt(Math.round(d.x), Math.round(d.y)) + 2.6, d.y + 0.5).project(activeCam());
     if (_proj.z > 1) { el.style.opacity = '0'; continue; }
     el.style.left = ((_proj.x * 0.5 + 0.5) * innerWidth) + 'px';
     el.style.top = ((-_proj.y * 0.5 + 0.5) * innerHeight) + 'px';
@@ -1408,6 +1632,58 @@ function updateLabels() {
     el.style.opacity = view.zoomNow < 22 ? '0' : String(Math.min(1, (view.zoomNow - 22) / 12));
   }
   for (const [k, el] of labelPool) if (!live.has(k)) { el.remove(); labelPool.delete(k); }
+}
+
+// --------------------------------------------------------------- street level
+function enterStreet() {
+  if (!playing) return;
+  mode = 'street';
+  ensureRoadList();
+  // Stand on the nearest piece of pavement to whatever you were looking at,
+  // because standing in the middle of a field is a poor first impression.
+  let best = -1, bd = 1e9;
+  for (const i of roadList) {
+    const x = i % W, y = (i / W) | 0;
+    const d = (x - view.cx) ** 2 + (y - view.cz) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  }
+  if (best >= 0) {
+    const bx = best % W, by = (best / W) | 0;
+    walk.x = bx + 0.5; walk.z = by + 0.5;
+    // Face ALONG the street. Inheriting the iso yaw drops you nose-first into
+    // whichever wall happened to be there, which is a poor way to arrive.
+    let dx = 0, dz = 1;
+    for (const [ax, az] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      if (inB(bx + ax, by + az) && city.road[idx(bx + ax, by + az)]) { dx = ax; dz = az; break; }
+    }
+    walk.yaw = Math.atan2(-dx, -dz);
+  } else { walk.x = view.cx; walk.z = view.cz; }
+  walk.pitch = -0.02;
+  walk.ride = null;
+  cursor.visible = false;
+  setFogFor('street');
+  document.body.classList.add('street');
+  labelsEl.style.display = 'none';
+}
+function leaveStreet() {
+  mode = 'iso';
+  walk.ride = null;
+  setFogFor('iso');
+  document.body.classList.remove('street');
+  view.tx = view.cx = Math.max(0, Math.min(W, walk.x));
+  view.tz = view.cz = Math.max(0, Math.min(H, walk.z));
+}
+function toggleRide() {
+  if (mode !== 'street') return;
+  if (walk.ride) { walk.ride = null; toast('Stepped down'); return; }
+  let best = null, bd = 1e9;
+  for (const c of cars) {
+    const fx = c.from % W, fy = (c.from / W) | 0;
+    const d = (fx - walk.x) ** 2 + (fy - walk.z) ** 2;
+    if (d < bd) { bd = d; best = c; }
+  }
+  if (best) { walk.ride = best; toast('Riding along'); }
+  else toast('No traffic nearby');
 }
 
 // -------------------------------------------------------------------- input
@@ -1463,6 +1739,7 @@ canvas.addEventListener('pointerdown', ev => {
   audio.start();
   if (!playing) return;
   try { canvas.setPointerCapture(ev.pointerId); } catch { /* synthetic event */ }
+  if (mode === 'street') { panning = true; panFrom = { x: ev.clientX, y: ev.clientY }; return; }
   if (ev.button === 2 || ev.button === 1) { panning = true; panFrom = { x: ev.clientX, y: ev.clientY }; return; }
   const p = pick(ev);
   if (tool === 'inspect') { if (p) showCard(p.x, p.y, ev.clientX, ev.clientY); return; }
@@ -1471,6 +1748,14 @@ canvas.addEventListener('pointerdown', ev => {
 });
 canvas.addEventListener('pointermove', ev => {
   if (!playing) return;
+  if (mode === 'street') {
+    if (!panning || !panFrom) return;
+    const dx = ev.clientX - panFrom.x, dy = ev.clientY - panFrom.y;
+    panFrom = { x: ev.clientX, y: ev.clientY };
+    walk.yaw -= dx * 0.004;
+    walk.pitch = Math.max(-1.2, Math.min(0.9, walk.pitch - dy * 0.003));
+    return;
+  }
   if (panning && panFrom) {
     const dx = ev.clientX - panFrom.x, dy = ev.clientY - panFrom.y;
     panFrom = { x: ev.clientX, y: ev.clientY };
@@ -1494,10 +1779,18 @@ const endPointer = () => { painting = false; panning = false; panFrom = null; };
 canvas.addEventListener('pointerup', endPointer);
 canvas.addEventListener('pointercancel', endPointer);
 canvas.addEventListener('wheel', ev => {
-  if (!playing) return;
+  if (!playing || mode === 'street') return;
   ev.preventDefault();
-  view.zoom = Math.max(0, Math.min(ZOOMS.length - 1, view.zoom + Math.sign(ev.deltaY)));
+  setZoom(view.zoom + Math.sign(ev.deltaY));
 }, { passive: false });
+function setZoom(z) {
+  view.zoom = Math.max(0, Math.min(ZOOMS.length - 1, z));
+  const b = document.getElementById('zoomOut');
+  if (b) {
+    b.classList.toggle('off', view.zoom >= ZOOMS.length - 1);
+    document.getElementById('zoomIn').classList.toggle('off', view.zoom <= 0);
+  }
+}
 
 const keys = new Set();
 addEventListener('keydown', ev => {
@@ -1515,8 +1808,11 @@ addEventListener('keydown', ev => {
   keys.add(k);
   if (k === 'q') view.yaw -= 90;
   if (k === 'e') view.yaw += 90;
-  if (k === 'z') view.zoom = Math.max(0, view.zoom - 1);
-  if (k === 'x') view.zoom = Math.min(ZOOMS.length - 1, view.zoom + 1);
+  if (k === 'z') setZoom(view.zoom - 1);
+  if (k === 'x') setZoom(view.zoom + 1);
+  if (k === 'tab') { ev.preventDefault(); mode === 'iso' ? enterStreet() : leaveStreet(); return; }
+  if (k === 'r' && mode === 'street') { toggleRide(); return; }
+  if (mode === 'street') return;                     // no building from the pavement
   if (k === ' ') { ev.preventDefault(); setSpeed(speed ? 0 : 1); }
   const t = TOOLS.find(t => t.hotkey === k);
   if (t && !t.el.classList.contains('locked')) setTool(t.id);
@@ -1531,6 +1827,12 @@ function setSpeed(s) {
   for (const el of document.querySelectorAll('.sp')) el.classList.toggle('on', +el.dataset.sp === s);
 }
 for (const el of document.querySelectorAll('.sp')) el.onclick = () => setSpeed(+el.dataset.sp);
+// document.getElementById directly, not the `$` helper: that is declared with
+// the HUD further down and would still be in its temporal dead zone here.
+document.getElementById('zoomIn').onclick = () => setZoom(view.zoom - 1);
+document.getElementById('zoomOut').onclick = () => setZoom(view.zoom + 1);
+document.getElementById('streetBtn').onclick = () => (mode === 'iso' ? enterStreet() : leaveStreet());
+document.getElementById('rideBtn').onclick = () => toggleRide();
 for (const b of document.querySelectorAll('#ovr button')) b.onclick = () => setOverlay(b.dataset.o);
 
 // ---------------------------------------------------------------- bulletins
@@ -1711,12 +2013,34 @@ function frame(now) {
   }
 
   const k = 1 - Math.pow(0.0022, dt);
-  view.cx += (view.tx - view.cx) * k;
-  view.cz += (view.tz - view.cz) * k;
-  view.yawNow += (view.yaw - view.yawNow) * (playing ? k : 1);
-  view.zoomNow += (ZOOMS[view.zoom] - view.zoomNow) * k;
-  placeCamera();
-  cloudPlane.position.set(view.cx, 14, view.cz);
+  if (mode === 'street') {
+    // Walk relative to where you are looking, which is the only thing that
+    // feels right once the camera can turn.
+    const sp = (keys.has('shift') ? 5.2 : 2.1) * dt;
+    let fwd = 0, strafe = 0;
+    if (keys.has('w') || keys.has('arrowup')) fwd += 1;
+    if (keys.has('s') || keys.has('arrowdown')) fwd -= 1;
+    if (keys.has('a') || keys.has('arrowleft')) strafe -= 1;
+    if (keys.has('d') || keys.has('arrowright')) strafe += 1;
+    if ((fwd || strafe) && !walk.ride) {
+      walk.x += (Math.sin(walk.yaw) * -fwd + Math.cos(walk.yaw) * strafe) * sp;
+      walk.z += (Math.cos(walk.yaw) * -fwd - Math.sin(walk.yaw) * strafe) * sp;
+      walk.x = Math.max(0.5, Math.min(W - 0.5, walk.x));
+      walk.z = Math.max(0.5, Math.min(H - 0.5, walk.z));
+    }
+    placeWalkCamera();
+    // Hidden at street level: a dark sheet 14 units overhead is a low ceiling
+    // when your eye is at 0.26.
+    cloudPlane.visible = false;
+  } else {
+    view.cx += (view.tx - view.cx) * k;
+    view.cz += (view.tz - view.cz) * k;
+    view.yawNow += (view.yaw - view.yawNow) * (playing ? k : 1);
+    view.zoomNow += (ZOOMS[view.zoom] - view.zoomNow) * k;
+    placeCamera();
+    cloudPlane.visible = !!SET.haze;
+    cloudPlane.position.set(view.cx, 14, view.cz);
+  }
   cloudTex.offset.x = (cloudTex.offset.x + dt * 0.0055) % 1;
   cloudTex.offset.y = (cloudTex.offset.y + dt * 0.0026) % 1;
 
@@ -1742,7 +2066,8 @@ function frame(now) {
 
   stepRubble(dt);
   stepSmoke(dt);
-  if (active) stepTraffic(dt);
+  stepBirds(dt, now / 1000);
+  if (active) { stepTraffic(dt); stepPeds(dt); }
   flushGround();
   if (bldDirty) rebuildBuildings();
   stepRising(dt);
@@ -1760,7 +2085,7 @@ function frame(now) {
     if (autosaveAcc > AUTOSAVE_SEC) { autosaveAcc = 0; saveCity(current.slotId, current.name); toast('Autosaved'); }
   }
 
-  renderer.render(scene, camera);
+  renderer.render(scene, activeCam());
 }
 
 // Blockers appear and clear as the grid changes; the marks have to follow.
@@ -1792,7 +2117,8 @@ window.CROSSTOWN = {
   },
   refresh: () => { applyWorld(); updateHUD(); },
   startNew, showTitle, saveCity, loadCity, listSlots, setOverlay, audio, SET,
+  enterStreet, leaveStreet, toggleRide, setZoom, get mode() { return mode; },
   get view() { return view; },
   setDay: t => { dayT = t; applyDaylight(); paintSky(true); bldDirty = true; },
-  three: { scene, renderer, camera, carMesh, cars, get roadList() { return roadList; } },
+  three: { scene, renderer, camera, camPersp, carMesh, cars, peds, walk, get roadList() { return roadList; } },
 };
