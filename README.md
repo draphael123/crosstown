@@ -61,8 +61,9 @@ resumed save continues on the exact die roll it was suspended on — test 10
 runs both copies 120 ticks past the save point and requires they still match.
 
 Settings: day and night, traffic, sound, shadows, render detail, distance haze,
-stack smoke, lot lines, autosave. Fog and shadows are compiled into the shader, so toggling either
-forces a material rebuild — without it the switch appears to do nothing.
+stack smoke, lot lines, autosave. Fog and shadows are compiled into the shader,
+so toggling either forces a material rebuild — without it the switch appears to
+do nothing at all.
 
 ## Making it feel alive
 
@@ -125,8 +126,9 @@ Both were invisible from a screenshot and obvious from the headless run.
 
 ## Not in this slice
 
-Water, traffic, services, crime, education, civic buildings beyond the
-generating stations. The redlining layer is deliberately absent: HOLC maps
+Water supply, road congestion (the cars are decoration, they do not model
+flow), services, crime, education, and civic buildings beyond the generating
+stations. The redlining layer is deliberately absent: HOLC maps
 graded neighbourhoods that already existed, and there is nothing to grade on a
 map you build yourself from bare ground. It needs an inherited city to mean
 anything, so it waits until there is one.
@@ -136,5 +138,6 @@ anything, so it waits until there is one.
     index.html          the paperwork UI
     src/sim.js          pure, headless, deterministic — no DOM, no three.js
     src/main.js         renderer, input, HUD
-    test/sim-test.mjs   30 assertions, positive control first
+    src/audio.js        synthesised ambience — no assets, nothing to vendor
+    test/sim-test.mjs   47 assertions, positive control first
     vendor/             three.js, vendored — a CDN import map is a dead screen
