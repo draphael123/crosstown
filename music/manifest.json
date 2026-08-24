@@ -1,0 +1,128 @@
+{
+  "source": "https://archive.org/details/kevin-macleod-music-col",
+  "artist": "Kevin MacLeod (incompetech.com)",
+  "licence": "CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/",
+  "encoded": "96 kbps stereo, from the archive.org VBR masters",
+  "tracks": [
+    {
+      "slug": "malt-shop-bop",
+      "title": "Malt Shop Bop",
+      "feel": "soda fountain",
+      "sec": 166
+    },
+    {
+      "slug": "kool-kats",
+      "title": "Kool Kats",
+      "feel": "swing",
+      "sec": 201
+    },
+    {
+      "slug": "fig-leaf-times-two",
+      "title": "Fig Leaf Times Two",
+      "feel": "ragtime",
+      "sec": 381
+    },
+    {
+      "slug": "life-of-riley",
+      "title": "Life of Riley",
+      "feel": "light",
+      "sec": 235
+    },
+    {
+      "slug": "local-forecast",
+      "title": "Local Forecast",
+      "feel": "lounge",
+      "sec": 165
+    },
+    {
+      "slug": "memory-lane",
+      "title": "Memory Lane",
+      "feel": "nostalgic",
+      "sec": 111
+    },
+    {
+      "slug": "easy-day",
+      "title": "Easy Day",
+      "feel": "light",
+      "sec": 195
+    },
+    {
+      "slug": "fiddles-mcginty",
+      "title": "Fiddles McGinty",
+      "feel": "americana",
+      "sec": 207
+    },
+    {
+      "slug": "glee-club-polka",
+      "title": "Glee Club Polka",
+      "feel": "polka",
+      "sec": 207
+    },
+    {
+      "slug": "carefree",
+      "title": "Carefree",
+      "feel": "light",
+      "sec": 205
+    },
+    {
+      "slug": "friday-morning",
+      "title": "Friday Morning",
+      "feel": "light",
+      "sec": 210
+    },
+    {
+      "slug": "killing-time",
+      "title": "Killing Time",
+      "feel": "jazzy",
+      "sec": 204
+    },
+    {
+      "slug": "jay-jay",
+      "title": "Jay Jay",
+      "feel": "light",
+      "sec": 216
+    },
+    {
+      "slug": "pooka",
+      "title": "Pooka",
+      "feel": "whimsical",
+      "sec": 112
+    },
+    {
+      "slug": "gymnopedie-no-1",
+      "title": "Gymnopedie No 1",
+      "feel": "reflective",
+      "sec": 187
+    },
+    {
+      "slug": "passing-time",
+      "title": "Passing Time",
+      "feel": "reflective",
+      "sec": 504
+    },
+    {
+      "slug": "bushwick-tarentella",
+      "title": "Bushwick Tarentella",
+      "feel": "americana",
+      "sec": 204
+    },
+    {
+      "slug": "hustle",
+      "title": "Hustle",
+      "feel": "busy",
+      "sec": 121
+    },
+    {
+      "slug": "investigations",
+      "title": "Investigations",
+      "feel": "quiet",
+      "sec": 94
+    },
+    {
+      "slug": "deep-haze",
+      "title": "Deep Haze",
+      "feel": "quiet",
+      "sec": 122
+    }
+  ]
+}

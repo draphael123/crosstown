@@ -216,6 +216,33 @@ blob and names it once. Names derive from the lowest tile index in the mass, not
 the centroid, because a centroid drifts as the district grows and the place
 would keep renaming itself.
 
+## Sound
+
+Ambience is synthesised at runtime in `src/audio.js` — a country bed and a
+traffic bed whose levels follow the city, plus a works whistle, a church bell on
+the hour and birds over open ground. No files, nothing to load.
+
+Music is 20 tracks, about **67 minutes**, by Kevin MacLeod under CC BY 4.0,
+re-encoded to 96 kbps so the repository stays near 47 MB rather than 170. It
+shuffles, never repeats a track back to back, and the clock bar names what is
+playing — click it to skip. See `ATTRIBUTION.md`.
+
+**Why none of it is a real 1955 recording:** sound recordings published in 1955
+are still under copyright in the United States. The Music Modernization Act
+brought pre-1972 recordings under federal protection on a rolling schedule that
+has so far only reached the mid-1920s, so anything that sounds like 1955
+*because it is 1955* is off limits. These are modern freely-licensed pieces
+chosen for period feel.
+
+## The induction
+
+Eleven memoranda from the Commission, in the order a city actually has to be
+built: pave, power, connect, zone, wait, work, trade, school, fire station,
+books, Village. Non-blocking — nothing locks a tool or stops the clock, because
+a tutorial that takes the controls away teaches you to wait rather than to
+build. Each memo shows a live count so you can see the game noticing. New cities
+only; opening a save means you have played before.
+
 ## Two things the tests found
 
 **The demand model was a thermostat.** Residents need jobs and jobs need

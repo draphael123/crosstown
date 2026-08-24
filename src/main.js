@@ -35,7 +35,7 @@ function nameFor(seed) {
 }
 
 // ---------------------------------------------------------------- settings
-const DEFAULT_SET = { shadows: 1, scale: 1, haze: 1, smoke: 1, lots: 0, autosave: 1, daynight: 1, sound: 1, traffic: 1, tutorial: 1 };
+const DEFAULT_SET = { shadows: 1, scale: 1, haze: 1, smoke: 1, lots: 0, autosave: 1, daynight: 1, sound: 1, traffic: 1, tutorial: 1, music: 1 };
 let SET = { ...DEFAULT_SET };
 try { Object.assign(SET, JSON.parse(localStorage.getItem(LS.settings) || '{}')); } catch { /* first run */ }
 const saveSettings = () => { try { localStorage.setItem(LS.settings, JSON.stringify(SET)); } catch { /* private mode */ } };
@@ -1374,6 +1374,14 @@ function applyWorld() {
 
 // ------------------------------------------------------------------- audio
 const audio = makeAudio();
+audio.loadPlaylist();
+// A discreet line in the clock bar naming what is on, the way a set would.
+audio.setOnTrack(t => {
+  const el = document.getElementById('nowPlaying');
+  if (!el) return;
+  el.textContent = t ? t.title : '';
+  el.classList.remove('hide');
+});
 
 // ---------------------------------------------------------------- induction
 // Only ever on a NEW city. Opening a saved one means you have played before,
@@ -1386,6 +1394,7 @@ const OPTS = [
   { k: 'daynight', lab: 'Day and night', sub: 'The light moves; the year does not' },
   { k: 'traffic', lab: 'Traffic', sub: 'Motor cars on the streets' },
   { k: 'sound', lab: 'Sound', sub: 'Ambience, whistles and bells' },
+  { k: 'music', lab: 'Music', sub: 'Period records, shuffled' },
   { k: 'shadows', lab: 'Cast shadows', sub: 'Sunlight and building shadows' },
   { k: 'scale', lab: 'Render detail', sub: 'Lower this if the map stutters', on: 'Full', off: 'Half' },
   { k: 'haze', lab: 'Distance haze', sub: 'Atmospheric fade at the map edge' },
@@ -1401,6 +1410,7 @@ function applySettings() {
   smokeGroup.visible = !!SET.smoke;
   cloudPlane.visible = !!SET.haze;
   audio.setEnabled(!!SET.sound);
+  audio.setMusic(!!SET.music);
   if (!SET.daynight) { dayT = 0.36; applyDaylight(); bldDirty = true; }
   // Fog and shadow are compiled into the shader, so every material has to be
   // told to rebuild or the toggle does nothing until something else changes.
@@ -1921,6 +1931,7 @@ document.getElementById('zoomOut').onclick = () => setZoom(view.zoom + 1);
 document.getElementById('streetBtn').onclick = () => (mode === 'iso' ? enterStreet() : leaveStreet());
 document.getElementById('rideBtn').onclick = () => toggleRide();
 document.getElementById('tutSkip').onclick = () => tutorial.skip();
+document.getElementById('nowPlaying').onclick = () => audio.nextTrack();
 for (const b of document.querySelectorAll('#ovr button')) b.onclick = () => setOverlay(b.dataset.o);
 
 // ---------------------------------------------------------------- bulletins

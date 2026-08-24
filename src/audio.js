@@ -7,10 +7,17 @@
 
 const NOISE_SEC = 2;
 
+// The music is ordinary <audio> elements rather than decoded buffers: an hour
+// of it would be several hundred megabytes in memory as PCM, and the browser
+// streams a file happily on its own.
+const MUSIC_DIR = 'music/';
+
 export function makeAudio() {
   let ctx = null, master = null, noiseBuf = null;
   let country = null, traffic = null, works = null;
   let enabled = true, running = false;
+  let tracks = [], order = [], cursor = 0, player = null;
+  let musicOn = true, musicVol = 0.5, onTrack = null;
   let whistleIn = 90 + Math.random() * 90;
   let birdIn = 12 + Math.random() * 20;
   let lastChime = -1;
@@ -32,7 +39,8 @@ export function makeAudio() {
   }
 
   function start() {
-    if (running) return;
+    if (running) { if (musicOn && player && player.paused) player.play().catch(() => {}); return; }
+    if (musicOn && tracks.length && !player) playCurrent();
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     ctx = new AC();
@@ -148,8 +156,58 @@ export function makeAudio() {
     }
   }
 
+  // ---------------------------------------------------------------- music
+  async function loadPlaylist() {
+    try {
+      const r = await fetch(MUSIC_DIR + 'manifest.json');
+      if (!r.ok) return;
+      const m = await r.json();
+      tracks = m.tracks || [];
+      reshuffle();
+    } catch { /* no music shipped; the ambience beds still work */ }
+  }
+  // Shuffled, but never the same track twice in a row across a reshuffle.
+  function reshuffle() {
+    const last = order.length ? order[order.length - 1] : -1;
+    order = tracks.map((_, i) => i);
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+    if (order.length > 1 && order[0] === last) [order[0], order[1]] = [order[1], order[0]];
+    cursor = 0;
+  }
+  function playCurrent() {
+    if (!tracks.length || !musicOn) return;
+    if (cursor >= order.length) reshuffle();
+    const t = tracks[order[cursor]];
+    if (!player) {
+      player = new Audio();
+      player.addEventListener('ended', () => { cursor++; playCurrent(); });
+      // A missing or unplayable file must not stall the whole playlist.
+      player.addEventListener('error', () => { cursor++; setTimeout(playCurrent, 400); });
+    }
+    player.src = MUSIC_DIR + t.slug + '.mp3';
+    player.volume = musicVol;
+    player.play().catch(() => { /* still waiting on a gesture */ });
+    if (onTrack) onTrack(t);
+  }
+
   return {
     start,
+    loadPlaylist,
+    get tracks() { return tracks; },
+    get nowPlaying() { return tracks.length ? tracks[order[cursor]] : null; },
+    setOnTrack(fn) { onTrack = fn; },
+    setMusic(on) {
+      musicOn = !!on;
+      if (!musicOn) { if (player) player.pause(); }
+      else if (player && player.src) player.play().catch(() => {});
+      else playCurrent();
+    },
+    setMusicVolume(v) { musicVol = Math.max(0, Math.min(1, v)); if (player) player.volume = musicVol; },
+    get musicVolume() { return musicVol; },
+    nextTrack() { cursor++; playCurrent(); },
     get running() { return running; },
     setEnabled(on) {
       enabled = !!on;

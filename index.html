@@ -103,6 +103,11 @@
   .sp.on { background:var(--ink); color:var(--paper); border-color:var(--ink); }
   #season { font-size:10px; letter-spacing:.16em; color:var(--ink2); text-transform:uppercase;
     padding-left:8px; margin-left:4px; border-left:1px solid var(--rule); }
+  #nowPlaying { font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--ink2);
+    padding-left:8px; margin-left:6px; border-left:1px solid var(--rule); cursor:pointer;
+    max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #nowPlaying:hover { color:var(--ink); }
+  #nowPlaying::before { content:'\266A  '; color:var(--stamp); }
   .camctl { display:flex; gap:4px; align-items:center; padding-left:8px; margin-left:6px;
     border-left:1px solid var(--rule); }
   .camctl button { font-family:var(--disp); font-size:11px; font-weight:600; letter-spacing:.10em;
@@ -325,6 +330,7 @@
     <div class="sp on" data-sp="1">Run</div>
     <div class="sp" data-sp="3">Fast</div>
     <div id="season">Spring</div>
+    <div id="nowPlaying" class="hide" title="Next record"></div>
     <div class="camctl">
       <button id="zoomIn" title="Zoom in (Z)">+</button>
       <button id="zoomOut" title="Zoom out (X)">&minus;</button>
