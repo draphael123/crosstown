@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CROSSTOWN</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&family=Oswald:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --manila:#ded0ae; --manila2:#cdb98e;
+    --paper:#e8dcc0; --ink:#2a251d; --ink2:#5d5340;
+    --mimeo:#33488c; --stamp:#9e3b2e; --rule:#9a8963;
+    --green:#3f6b3a; --blue:#2f5f86; --amber:#a8791f;
+    --type:'Courier Prime', ui-monospace, Consolas, monospace;
+    --disp:'Oswald', 'Arial Narrow', sans-serif;
+  }
+  html, body { margin:0; height:100%; overflow:hidden; background:#1d2420;
+    font-family:var(--type); color:var(--ink);
+    touch-action:none; overscroll-behavior:none; -webkit-user-select:none; user-select:none; }
+  #c { display:block; width:100vw; height:100vh; height:100dvh; cursor:crosshair; }
+  .hide { display:none !important; }
+  button { font:inherit; color:inherit; }
+
+  .paper {
+    position:fixed; z-index:6;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.022) 0 1px, transparent 1px 3px),
+      linear-gradient(160deg, var(--paper), var(--manila) 60%, var(--manila2));
+    border:1px solid rgba(60,50,30,.45);
+    box-shadow: 0 6px 18px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.22);
+  }
+  .paper::after {
+    content:''; position:absolute; left:0; top:0; bottom:0; width:3px;
+    background:repeating-linear-gradient(180deg, rgba(60,50,30,.30) 0 6px, transparent 6px 16px);
+  }
+  .ttl { font-family:var(--disp); font-weight:600; letter-spacing:.18em; text-transform:uppercase;
+    font-size:10px; color:var(--ink2); border-bottom:1px solid var(--rule); padding-bottom:3px; margin-bottom:6px; }
+
+  /* ------------------------------------------------------------ masthead */
+  #mast { left:16px; top:14px; padding:10px 16px 10px 20px; min-width:270px; }
+  #mastName { font-family:var(--disp); font-weight:600; font-size:27px; letter-spacing:.10em;
+    line-height:1; text-transform:uppercase; }
+  #mastSub { font-size:10px; letter-spacing:.10em; color:var(--ink2); margin-top:4px; }
+  #mastRule { height:2px; background:var(--ink); margin:7px 0 5px; opacity:.75; }
+  #mastFoot { display:flex; justify-content:space-between; align-items:center; gap:14px; }
+  #mastYear { font-family:var(--disp); font-size:11px; letter-spacing:.34em; color:var(--stamp); font-weight:500; }
+  #fileBtn { font-family:var(--disp); font-size:10px; font-weight:600; letter-spacing:.16em; text-transform:uppercase;
+    background:rgba(255,255,255,.32); border:1px solid var(--rule); padding:3px 10px; cursor:pointer; }
+  #fileBtn:hover { background:var(--ink); color:var(--paper); border-color:var(--ink); }
+
+  /* -------------------------------------------------------------- ledger */
+  #ledger { right:16px; top:14px; padding:9px 14px 10px 18px; min-width:212px; }
+  .row { display:flex; justify-content:space-between; align-items:baseline; font-size:12px; margin:3px 0; }
+  .row b { font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:.02em; }
+  .row span { color:var(--ink2); font-size:10px; letter-spacing:.08em; text-transform:uppercase; }
+  #rank { display:inline-block; margin-top:7px; font-family:var(--disp); font-size:11px; font-weight:600;
+    letter-spacing:.20em; text-transform:uppercase; color:var(--stamp);
+    border:2px solid var(--stamp); border-radius:2px; padding:2px 8px; transform:rotate(-1.6deg); opacity:.9; }
+
+  /* ------------------------------------------------------------ palette */
+  #palette { left:16px; bottom:16px; padding:9px 12px 11px 18px; width:236px; }
+  .tools { display:grid; grid-template-columns:repeat(3, 1fr); gap:4px; }
+  .tool { position:relative; background:rgba(255,255,255,.30); border:1px solid var(--rule);
+    padding:6px 3px 5px; text-align:center; cursor:pointer; transition:background .1s; }
+  .tool:hover { background:rgba(255,255,255,.62); }
+  .tool.on { background:var(--ink); color:var(--paper); border-color:var(--ink); }
+  .tool.locked { opacity:.34; cursor:not-allowed; }
+  .tool .k { font-family:var(--disp); font-size:11px; font-weight:600; letter-spacing:.09em;
+    text-transform:uppercase; display:block; line-height:1.15; }
+  .tool .p { font-size:9px; color:var(--ink2); letter-spacing:.02em; }
+  .tool.on .p { color:rgba(232,220,192,.75); }
+  .swatch { position:absolute; left:3px; top:3px; width:6px; height:6px; border:1px solid rgba(0,0,0,.4); }
+
+  /* --------------------------------------------------------------- gauges */
+  #gauges { right:16px; bottom:16px; padding:9px 14px 11px 18px; width:214px; }
+  .dem { display:flex; align-items:center; gap:7px; margin:5px 0; font-size:10px; letter-spacing:.10em; }
+  .dem i { font-style:normal; font-family:var(--disp); font-weight:600; width:11px; color:var(--ink2); }
+  .bar { position:relative; flex:1; height:9px; background:rgba(80,68,44,.20);
+    border:1px solid var(--rule); overflow:hidden; }
+  .bar .mid { position:absolute; left:50%; top:0; bottom:0; width:1px; background:rgba(60,50,30,.55); }
+  .bar .fill { position:absolute; top:0; bottom:0; left:50%; width:0; }
+  #pwrWrap { margin-top:9px; padding-top:7px; border-top:1px solid var(--rule); }
+  #pwrBar { height:9px; background:rgba(80,68,44,.20); border:1px solid var(--rule); position:relative; overflow:hidden; }
+  #pwrFill { position:absolute; left:0; top:0; bottom:0; width:0; background:var(--amber); }
+  #pwrTxt { font-size:10px; color:var(--ink2); letter-spacing:.06em; margin-top:3px; display:flex; justify-content:space-between; }
+  #pwrTxt b { font-weight:700; font-variant-numeric:tabular-nums; }
+  .short { color:var(--stamp) !important; font-weight:700; }
+
+  /* ---------------------------------------------------------------- clock */
+  #clock { left:50%; transform:translateX(-50%); bottom:16px; padding:7px 10px 8px 16px; display:flex; gap:5px; align-items:center; }
+  .sp { font-family:var(--disp); font-size:11px; font-weight:600; letter-spacing:.14em; text-transform:uppercase;
+    border:1px solid var(--rule); background:rgba(255,255,255,.30); padding:3px 9px; cursor:pointer; }
+  .sp.on { background:var(--ink); color:var(--paper); border-color:var(--ink); }
+  #season { font-size:10px; letter-spacing:.16em; color:var(--ink2); text-transform:uppercase;
+    padding-left:8px; margin-left:4px; border-left:1px solid var(--rule); }
+
+  /* ------------------------------------------------------------ bulletins */
+  #bulletins { position:fixed; z-index:8; left:50%; transform:translateX(-50%); top:16px;
+    display:flex; flex-direction:column; gap:7px; align-items:center; pointer-events:none; }
+  .bull { background:linear-gradient(150deg,#f0e7d0,#ded0ae); border:1px solid rgba(60,50,30,.5);
+    box-shadow:0 5px 14px rgba(0,0,0,.4); padding:8px 18px 9px; text-align:center; max-width:400px;
+    animation:drop .45s cubic-bezier(.2,1.3,.5,1); }
+  .bull .h { font-family:var(--disp); font-weight:600; font-size:13px; letter-spacing:.20em;
+    text-transform:uppercase; color:var(--stamp); }
+  .bull .b { font-size:11px; color:var(--ink2); margin-top:2px; letter-spacing:.02em; }
+  @keyframes drop { from { opacity:0; transform:translateY(-14px) rotate(-1deg); } to { opacity:1; } }
+
+  #help { position:fixed; z-index:6; left:50%; transform:translateX(-50%); bottom:66px;
+    font-size:10px; letter-spacing:.10em; color:rgba(26,32,24,.72); text-transform:uppercase;
+    text-shadow:0 1px 0 rgba(240,235,215,.45), 0 0 6px rgba(240,235,215,.55); pointer-events:none; }
+
+  /* ============================================================== overlay */
+  #overlay { position:fixed; inset:0; z-index:30; display:grid; place-items:center;
+    background:radial-gradient(120% 90% at 50% 40%, rgba(18,24,20,.30), rgba(14,18,16,.86)); }
+  .sheet { position:relative; width:min(560px, 92vw); max-height:88vh; overflow:auto;
+    padding:26px 34px 28px 40px;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.022) 0 1px, transparent 1px 3px),
+      linear-gradient(160deg, #efe5cb, #ded0ae 55%, #c9b489);
+    border:1px solid rgba(60,50,30,.55);
+    box-shadow:0 22px 60px rgba(0,0,0,.6), inset 0 0 0 1px rgba(255,255,255,.25); }
+  .sheet::after { content:''; position:absolute; left:0; top:0; bottom:0; width:5px;
+    background:repeating-linear-gradient(180deg, rgba(60,50,30,.30) 0 8px, transparent 8px 22px); }
+  .sheet h1 { font-family:var(--disp); font-weight:700; font-size:52px; letter-spacing:.14em;
+    margin:0; line-height:.95; text-transform:uppercase; }
+  .sheet h2 { font-family:var(--disp); font-weight:600; font-size:17px; letter-spacing:.22em;
+    margin:0 0 3px; text-transform:uppercase; }
+  .sheet .lede { font-size:11px; letter-spacing:.10em; color:var(--ink2); margin:7px 0 0; }
+  .hr { height:2px; background:var(--ink); opacity:.72; margin:14px 0 16px; }
+  .hr.thin { height:1px; background:var(--rule); opacity:1; margin:13px 0; }
+
+  .btns { display:flex; flex-direction:column; gap:8px; margin-top:4px; }
+  .btn { display:block; width:100%; text-align:left; font-family:var(--disp); font-weight:600;
+    font-size:15px; letter-spacing:.16em; text-transform:uppercase;
+    background:rgba(255,255,255,.34); border:1px solid var(--rule); padding:10px 16px; cursor:pointer;
+    transition:background .12s, transform .06s; }
+  .btn:hover { background:var(--ink); color:var(--paper); border-color:var(--ink); }
+  .btn:active { transform:translateY(1px); }
+  .btn .sub { display:block; font-family:var(--type); font-size:10px; font-weight:400;
+    letter-spacing:.04em; text-transform:none; color:var(--ink2); margin-top:2px; }
+  .btn:hover .sub { color:rgba(232,220,192,.72); }
+  .btn.ghost { background:transparent; font-size:12px; padding:7px 16px; }
+  .btn.wide { text-align:center; }
+  .btn[disabled] { opacity:.35; cursor:not-allowed; }
+  .btn[disabled]:hover { background:rgba(255,255,255,.34); color:inherit; border-color:var(--rule); }
+
+  .field { display:flex; align-items:center; gap:12px; margin:11px 0; }
+  .field label { font-family:var(--disp); font-size:11px; font-weight:600; letter-spacing:.16em;
+    text-transform:uppercase; color:var(--ink2); width:112px; flex:none; }
+  .field input[type=text], .field input[type=number] {
+    flex:1; font-family:var(--type); font-size:14px; color:var(--ink);
+    background:rgba(255,255,255,.42); border:1px solid var(--rule); border-radius:0;
+    padding:7px 10px; outline:none; min-width:0; }
+  .field input:focus { background:rgba(255,255,255,.72); border-color:var(--ink); }
+  .field .mini { font-family:var(--disp); font-size:10px; font-weight:600; letter-spacing:.12em;
+    text-transform:uppercase; background:rgba(255,255,255,.34); border:1px solid var(--rule);
+    padding:7px 11px; cursor:pointer; flex:none; }
+  .field .mini:hover { background:var(--ink); color:var(--paper); }
+
+  /* toggle rows */
+  .opt { display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:8px 0; border-bottom:1px dotted rgba(120,105,70,.45); }
+  .opt:last-of-type { border-bottom:0; }
+  .opt .lab { font-size:12px; }
+  .opt .lab i { display:block; font-style:normal; font-size:10px; color:var(--ink2); margin-top:1px; }
+  .seg { display:flex; flex:none; border:1px solid var(--rule); }
+  .seg button { font-family:var(--disp); font-size:10px; font-weight:600; letter-spacing:.12em;
+    text-transform:uppercase; background:rgba(255,255,255,.30); border:0; border-left:1px solid var(--rule);
+    padding:5px 11px; cursor:pointer; }
+  .seg button:first-child { border-left:0; }
+  .seg button.on { background:var(--ink); color:var(--paper); }
+
+  /* save slots */
+  .slot { display:flex; align-items:center; gap:12px; padding:9px 0;
+    border-bottom:1px dotted rgba(120,105,70,.45); }
+  .slot .info { flex:1; min-width:0; }
+  .slot .nm { font-family:var(--disp); font-size:14px; font-weight:600; letter-spacing:.10em; text-transform:uppercase; }
+  .slot .meta { font-size:10px; color:var(--ink2); letter-spacing:.05em; margin-top:2px; }
+  .slot .act { display:flex; gap:5px; flex:none; }
+  .slot .act button { font-family:var(--disp); font-size:10px; font-weight:600; letter-spacing:.12em;
+    text-transform:uppercase; background:rgba(255,255,255,.32); border:1px solid var(--rule);
+    padding:5px 10px; cursor:pointer; }
+  .slot .act button:hover { background:var(--ink); color:var(--paper); }
+  .slot .act button.del:hover { background:var(--stamp); border-color:var(--stamp); }
+  .empty { font-size:11px; color:var(--ink2); text-align:center; padding:22px 0; letter-spacing:.06em; }
+
+  .stampmark { position:absolute; right:26px; top:22px; font-family:var(--disp); font-weight:700;
+    font-size:11px; letter-spacing:.24em; text-transform:uppercase; color:var(--stamp);
+    border:2px solid var(--stamp); padding:4px 10px; transform:rotate(-7deg); opacity:.72; }
+  .foot { font-size:10px; color:var(--ink2); letter-spacing:.06em; margin-top:16px; text-align:center; }
+  #toast { position:fixed; z-index:40; left:50%; transform:translateX(-50%); bottom:96px;
+    font-family:var(--disp); font-size:11px; font-weight:600; letter-spacing:.18em; text-transform:uppercase;
+    background:var(--ink); color:var(--paper); padding:7px 16px; opacity:0; transition:opacity .25s;
+    pointer-events:none; }
+  #toast.show { opacity:.94; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="hud" class="hide">
+  <div id="mast" class="paper">
+    <div id="mastName">CROSSTOWN</div>
+    <div id="mastSub">Office of the City Planning Commission</div>
+    <div id="mastRule"></div>
+    <div id="mastFoot">
+      <span id="mastYear">Anno 1955</span>
+      <button id="fileBtn">File</button>
+    </div>
+  </div>
+
+  <div id="ledger" class="paper">
+    <div class="ttl">Treasurer's Abstract</div>
+    <div class="row"><span>On hand</span><b id="funds">$20,000</b></div>
+    <div class="row"><span>Residents</span><b id="pop">0</b></div>
+    <div class="row"><span>Employed</span><b id="jobs">0</b></div>
+    <div class="row"><span>Quarterly</span><b id="net">—</b></div>
+    <div id="rank">Township</div>
+  </div>
+
+  <div id="palette" class="paper">
+    <div class="ttl">Instruments of the Commission</div>
+    <div class="tools" id="tools"></div>
+  </div>
+
+  <div id="gauges" class="paper">
+    <div class="ttl">Demand &amp; Service</div>
+    <div class="dem"><i>R</i><div class="bar"><div class="fill" id="dR"></div><div class="mid"></div></div></div>
+    <div class="dem"><i>C</i><div class="bar"><div class="fill" id="dC"></div><div class="mid"></div></div></div>
+    <div class="dem"><i>I</i><div class="bar"><div class="fill" id="dI"></div><div class="mid"></div></div></div>
+    <div id="pwrWrap">
+      <div id="pwrBar"><div id="pwrFill"></div></div>
+      <div id="pwrTxt"><span id="pwrLbl">Generation</span><b id="pwrVal">0 / 0</b></div>
+    </div>
+  </div>
+
+  <div id="clock" class="paper">
+    <div class="sp" data-sp="0">Hold</div>
+    <div class="sp on" data-sp="1">Run</div>
+    <div class="sp" data-sp="3">Fast</div>
+    <div id="season">Spring</div>
+  </div>
+
+  <div id="help">drag to draw &nbsp;·&nbsp; right-drag or WASD to pan &nbsp;·&nbsp; Q / E rotate &nbsp;·&nbsp; Z / X zoom &nbsp;·&nbsp; 1-9 tools &nbsp;·&nbsp; Esc menu</div>
+</div>
+
+<div id="bulletins"></div>
+<div id="toast"></div>
+
+<!-- ===================================================== overlay screens -->
+<div id="overlay">
+
+  <!-- title ------------------------------------------------------------ -->
+  <div class="sheet" id="scrTitle">
+    <div class="stampmark">Filed</div>
+    <h1>Crosstown</h1>
+    <div class="lede">Office of the City Planning Commission &nbsp;·&nbsp; Plat &amp; Zoning Authority</div>
+    <div class="hr"></div>
+    <p style="font-size:12px;line-height:1.6;margin:0 0 18px;color:var(--ink2)">
+      A tract of river country and a commission seat. Survey the lots, run the
+      streets, string the wire, and see what settles on it.<br>
+      The year is 1955, and it stays 1955.
+    </p>
+    <div class="btns">
+      <button class="btn" id="btnContinue">Resume last city<span class="sub" id="contSub">—</span></button>
+      <button class="btn" id="btnNew">Charter a new city<span class="sub">Choose a name and a tract of land</span></button>
+      <button class="btn" id="btnLoad">Open the files<span class="sub" id="loadSub">Saved cities</span></button>
+      <button class="btn ghost" id="btnSettingsT">Settings</button>
+    </div>
+  </div>
+
+  <!-- new city --------------------------------------------------------- -->
+  <div class="sheet hide" id="scrNew">
+    <h2>Application for Charter</h2>
+    <div class="lede">Form 14-B &nbsp;·&nbsp; to be completed in full</div>
+    <div class="hr"></div>
+    <div class="field">
+      <label for="inName">City name</label>
+      <input type="text" id="inName" maxlength="26" autocomplete="off" spellcheck="false">
+      <button class="mini" id="btnRollName">Draw</button>
+    </div>
+    <div class="field">
+      <label for="inSeed">Tract no.</label>
+      <input type="number" id="inSeed" min="0" step="1">
+      <button class="mini" id="btnRollSeed">Survey</button>
+    </div>
+    <div class="lede" style="margin-top:2px">The tract number fixes the river, the woods and the lie of the land.</div>
+    <div class="hr thin"></div>
+    <div class="btns">
+      <button class="btn wide" id="btnBegin">Grant the charter</button>
+      <button class="btn ghost wide" id="btnNewBack">Back</button>
+    </div>
+  </div>
+
+  <!-- load ------------------------------------------------------------- -->
+  <div class="sheet hide" id="scrLoad">
+    <h2>The Files</h2>
+    <div class="lede">Cities of record</div>
+    <div class="hr"></div>
+    <div id="slotList"></div>
+    <div class="hr thin"></div>
+    <div class="btns"><button class="btn ghost wide" id="btnLoadBack">Back</button></div>
+  </div>
+
+  <!-- settings --------------------------------------------------------- -->
+  <div class="sheet hide" id="scrSettings">
+    <h2>Standing Orders</h2>
+    <div class="lede">Presentation and clerical preferences</div>
+    <div class="hr"></div>
+    <div id="optList"></div>
+    <div class="hr thin"></div>
+    <div class="btns"><button class="btn ghost wide" id="btnSetBack">Back</button></div>
+  </div>
+
+  <!-- pause ------------------------------------------------------------ -->
+  <div class="sheet hide" id="scrPause">
+    <h2 id="pauseName">The City</h2>
+    <div class="lede" id="pauseSub">—</div>
+    <div class="hr"></div>
+    <div class="btns">
+      <button class="btn" id="btnResume">Return to the drawing<span class="sub">Esc</span></button>
+      <button class="btn" id="btnSave">File the city<span class="sub" id="saveSub">Save progress</span></button>
+      <button class="btn" id="btnSaveAs">File under a new name</button>
+      <button class="btn ghost" id="btnSettingsP">Settings</button>
+      <button class="btn ghost" id="btnQuit">Close the file<span class="sub">Return to the title sheet</span></button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
