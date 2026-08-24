@@ -8,7 +8,7 @@ import { makeAudio } from './audio.js';
 const { W, H, N, Z, T, idx } = S;
 const TAU = Math.PI * 2;
 
-const ELEV = 2.0;          // world units per unit of sim elevation
+const ELEV = 1.0;          // sim elevation is already in world units
 const GRES = 4;            // ground-texture texels per tile
 const TICK_HZ = 3;         // sim ticks per second at Run
 const AUTOSAVE_SEC = 60;
@@ -170,6 +170,11 @@ addEventListener('resize', onResize);
 
 // ---------------------------------------------------------- ground texture
 const hAt = (x, y) => city.terrain[idx(x, y)] === T.WATER ? -0.14 : city.elev[idx(x, y)] * ELEV;
+function padH(x, y) {
+  let m = Infinity;
+  for (let dy = 0; dy <= 1; dy++) for (let dx = 0; dx <= 1; dx++) m = Math.min(m, cornerH(x + dx, y + dy));
+  return m === Infinity ? hAt(x, y) : m;
+}
 function cornerH(vx, vy) {
   let s = 0, n = 0;
   for (let dy = -1; dy <= 0; dy++) for (let dx = -1; dx <= 0; dx++) {
@@ -218,7 +223,7 @@ const PAL = {
   water: ['#3c6b88', '#41708c', '#48789a', '#4d7fa0', '#457694', '#3f6d8a'],
   shore: ['#a8a077', '#b0a880', '#9d956d'],
   tree: ['#4e6b41', '#587448', '#47623c'],
-  road: { 1: '#7d6c50', 2: '#54524c', 3: '#5c5a53' },   // dirt / street / boulevard
+  road: { 1: '#7d6c50', 2: '#54524c', 3: '#5c5a53', 4: '#6b6157' },   // dirt/street/blvd/bridge
   roadLine: '#b9b29a', gravel: '#93815f', median: '#5f7c46', kerb: '#8e897c',
   park: '#5d8348', parkPath: '#a89a76',
   lot: { [Z.R]: '#9aa872', [Z.C]: '#7f96a8', [Z.I]: '#a89a72' },
@@ -282,6 +287,11 @@ function paintTile(x, y) {
       if (Wn) g.fillRect(px, c1, GRES >> 1, 1);
       if (Sn) g.fillRect(c0, c1 + 1, 1, GRES >> 1);
       if (Nn) g.fillRect(c0, py, 1, GRES >> 1);
+    } else if (grade === S.ROAD.BRIDGE) {
+      // The deck itself is a mesh above the water; this is only what shows
+      // through underneath, so keep it dark and quiet.
+      g.fillStyle = PAL.water[2];
+      g.fillRect(px, py, GRES, GRES);
     } else {
       // A boulevard reads by its planted median and its kerbs, not by a stripe.
       g.fillStyle = PAL.kerb;
@@ -389,6 +399,19 @@ function paintOverlay() {
       if (city.powered[i]) { r = 214; g = 154; b = 44; a = 190; }
       else if (city.bld[i] || city.zone[i]) { r = 168; g = 58; b = 44; a = 200; }
       else { a = 0; }
+    } else if (ovrMode === 'cover') {
+      // Three services stacked into one sheet: red where housing has no school,
+      // amber where nothing is in reach of a fire station, blue for unpoliced.
+      const noSchool = !city.cover[S.SVC.SCHOOL][i];
+      const noFire = !city.cover[S.SVC.FIRE][i];
+      const noPolice = !city.cover[S.SVC.POLICE][i];
+      if (!city.zone[i] && !city.bld[i]) { a = 0; }
+      else if (noSchool) { r = 178; g = 62; b = 48; a = 205; }
+      else if (noFire) { r = 214; g = 154; b = 44; a = 185; }
+      else if (noPolice) { r = 62; g = 96; b = 168; a = 165; }
+      // Barely there where everything is in reach: this sheet exists to show
+      // the HOLES, and a strong wash over the served majority hides them.
+      else { r = 92; g = 140; b = 84; a = 38; }
     } else if (ovrMode === 'smoke') {
       const v = Math.min(1, city.soot[i] * 2.2);
       if (v < 0.02) { a = 0; } else { r = 92 + v * 40; g = 84 + v * 26; b = 76; a = 40 + v * 200; }
@@ -527,7 +550,7 @@ const variantOf = i => (hash(i + 991) * 3) | 0;
 function placeTile(i, e, k, scaleY, scaleXZ) {
   const x = i % W, y = (i / W) | 0, r = hash(i), z = city.zone[i];
   _q.setFromAxisAngle(YAXIS, ((r * 4) | 0) * Math.PI / 2);
-  _v.set(x + 0.5, hAt(x, y), y + 0.5);
+  _v.set(x + 0.5, padH(x, y), y + 0.5);
   _sc.set(scaleXZ, scaleY, scaleXZ);
   _m.compose(_v, _q, _sc);
   e.mesh.setMatrixAt(k, _m);
@@ -558,7 +581,7 @@ function rebuildBuildings() {
     if (z === Z.R && t <= 2 && sheds < 6000 && hash(i + 4242) < 0.45) {
       const sx = i % W, sy = (i / W) | 0, sr = hash(i + 61);
       _q.setFromAxisAngle(YAXIS, sr * TAU);
-      _v.set(sx + 0.18 + sr * 0.12, hAt(sx, sy), sy + 0.74 - sr * 0.10);
+      _v.set(sx + 0.18 + sr * 0.12, padH(sx, sy), sy + 0.74 - sr * 0.10);
       _sc.set(1, 1, 1);
       _m.compose(_v, _q, _sc);
       shedMesh.setMatrixAt(sheds, _m);
@@ -581,6 +604,7 @@ function rebuildBuildings() {
     e.mesh.instanceMatrix.needsUpdate = true;
     if (e.mesh.instanceColor) e.mesh.instanceColor.needsUpdate = true;
   }
+  rebuildServices();
   shedMesh.count = sheds;
   shedMesh.instanceMatrix.needsUpdate = true;
   if (shedMesh.instanceColor) shedMesh.instanceColor.needsUpdate = true;
@@ -631,6 +655,79 @@ function stepRubble(dt) {
   }
 }
 
+// ----------------------------------------------------------------- bridges
+// A real deck, because a bridge painted into the ground texture would sit at
+// the river bed and read as a ford.
+const bridgeMesh = (() => {
+  const m = new THREE.InstancedMesh(
+    mergeGeos([
+      box(1.02, .12, .74, 0, .46),          // deck
+      box(1.02, .09, .07, 0, .58, .36),     // railings
+      box(1.02, .09, .07, 0, .58, -.36),
+      box(.16, .62, .16, -.34, -.16),       // piers
+      box(.16, .62, .16, .34, -.16),
+    ]),
+    new THREE.MeshLambertMaterial({ color: 0x8c8377 }), 400);
+  m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false; m.count = 0;
+  scene.add(m);
+  return m;
+})();
+function rebuildBridges() {
+  let k = 0;
+  for (let i = 0; i < N; i++) {
+    if (city.road[i] !== S.ROAD.BRIDGE || k >= 400) continue;
+    const x = i % W, y = (i / W) | 0;
+    // Lay the deck along whichever way its neighbours run.
+    const ew = (x + 1 < W && city.road[idx(x + 1, y)]) || (x > 0 && city.road[idx(x - 1, y)]);
+    _q.setFromAxisAngle(YAXIS, ew ? 0 : Math.PI / 2);
+    _v.set(x + 0.5, -0.14, y + 0.5);
+    _sc.set(1, 1, 1);
+    _m.compose(_v, _q, _sc);
+    bridgeMesh.setMatrixAt(k++, _m);
+  }
+  bridgeMesh.count = k;
+  bridgeMesh.instanceMatrix.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------- services
+const SVC_GEO = {
+  [S.SVC.SCHOOL]: () => mergeGeos([box(.68, .40, .52), pyr(.46, .22, .40), box(.13, .17, .13, 0, .62)]),
+  [S.SVC.FIRE]: () => mergeGeos([box(.60, .44, .58), box(.20, .52, .20, .24, .44), box(.66, .07, .64, 0, .44)]),
+  [S.SVC.POLICE]: () => mergeGeos([box(.64, .40, .56), box(.70, .09, .62, 0, .40), box(.16, .14, .16, 0, .49)]),
+  [S.SVC.CIVIC]: () => mergeGeos([box(.82, .62, .68), box(.88, .10, .74, 0, .62), pyr(.44, .40, .72)]),
+  [S.SVC.CHURCH]: () => mergeGeos([box(.44, .40, .66), pyr(.34, .22, .40), box(.19, .86, .19, 0, .40, -.26), pyr(.16, .34, 1.26)]),
+};
+const SVC_TINT = {
+  [S.SVC.SCHOOL]: 0xb8483a, [S.SVC.FIRE]: 0x8e3a2e, [S.SVC.POLICE]: 0x6d7480,
+  [S.SVC.CIVIC]: 0xd8d2c0, [S.SVC.CHURCH]: 0xe4dfcc,
+};
+const svcMeshes = {};
+for (const k of Object.keys(SVC_GEO)) {
+  const m = new THREE.InstancedMesh(SVC_GEO[k](), new THREE.MeshLambertMaterial({ color: SVC_TINT[k] }), 160);
+  m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false; m.count = 0;
+  scene.add(m);
+  svcMeshes[k] = m;
+}
+function rebuildServices() {
+  const n = {};
+  for (const k of Object.keys(SVC_GEO)) n[k] = 0;
+  for (const sv of city.services) {
+    const m = svcMeshes[sv.kind];
+    if (!m || n[sv.kind] >= 160) continue;
+    _q.setFromAxisAngle(YAXIS, ((hash(idx(sv.x, sv.y)) * 4) | 0) * Math.PI / 2);
+    _v.set(sv.x + 0.5, padH(sv.x, sv.y), sv.y + 0.5);
+    _sc.set(1, 1, 1);
+    _m.compose(_v, _q, _sc);
+    m.setMatrixAt(n[sv.kind]++, _m);
+  }
+  for (const k of Object.keys(SVC_GEO)) {
+    svcMeshes[k].count = n[k];
+    svcMeshes[k].instanceMatrix.needsUpdate = true;
+    // An unfunded station is a dark station.
+    svcMeshes[k].material.color.setHex(SVC_TINT[k]).multiplyScalar(city.funded ? 1 : 0.45);
+  }
+}
+
 // -------------------------------------------- farmsteads and outbuildings
 // Barns, silos and farmhouses scattered over open ground, so the land you have
 // not zoned yet reads as working farmland rather than as blank space waiting
@@ -673,7 +770,7 @@ function rebuildFarms() {
     if (n[k] >= FARM_CAP) return;
     const r = hash(idx(x, y) + salt);
     _q.setFromAxisAngle(YAXIS, ((r * 4) | 0) * Math.PI / 2);
-    _v.set(x + 0.5, hAt(x, y), y + 0.5);
+    _v.set(x + 0.5, padH(x, y), y + 0.5);
     _sc.set(1, 1, 1);
     _m.compose(_v, _q, _sc);
     m.setMatrixAt(n[k], _m);
@@ -722,7 +819,7 @@ function rebuildTrees() {
     const i = idx(x, y);
     if (city.terrain[i] !== T.TREE || k >= 12000) continue;
     const r = hash(i), s = 0.7 + r * 0.7;
-    _v.set(x + 0.2 + r * 0.6, hAt(x, y), y + 0.2 + hash(i + 7) * 0.6);
+    _v.set(x + 0.2 + r * 0.6, padH(x, y), y + 0.2 + hash(i + 7) * 0.6);
     _q.setFromAxisAngle(YAXIS, r * 6.28);
     _m.compose(_v, _q, new THREE.Vector3(s, 0.8 + r * 0.6, s));
     treeMesh.setMatrixAt(k, _m);
@@ -780,7 +877,7 @@ function spawnCar() {
 }
 function stepTraffic(dt) {
   if (!SET.traffic) { carMesh.count = 0; return; }
-  if (city.roadVersion !== roadVer) refreshRoadList();
+  if (city.roadVersion !== roadVer) { refreshRoadList(); rebuildBridges(); }
   const busy = city.pop.res + city.pop.jobsC + city.pop.jobsI;
   const target = Math.min(CAR_MAX, Math.round(busy / 42));
   while (cars.length > target) cars.pop();
@@ -896,7 +993,7 @@ function rebuildPlants() {
       g.add(st);
       tops.push(st.position.clone());
     }
-    const base = new THREE.Vector3(p.x + P.w / 2, hAt(p.x, p.y), p.y + P.h / 2);
+    const base = new THREE.Vector3(p.x + P.w / 2, padH(p.x, p.y), p.y + P.h / 2);
     g.position.copy(base);
     plantGroup.add(g);
 
@@ -935,11 +1032,19 @@ const cursor = new THREE.Mesh(
 // Trees now refuse everything but Raze and Green, and a refusal that shows
 // nothing at all just reads as a broken mouse.
 const CURSOR_OK = 0xfff4d0, CURSOR_NO = 0xd8503c;
+const ROAD_TOOLS = { dirt: 1, street: 1, boulevard: 1 };
+const SVC_TOOLS = { school: 1, fire: 1, police: 1, church: 1, civic: 1 };
 function cursorAllows(x, y) {
   const i = idx(x, y);
   if (tool === 'inspect') return true;
+  if (tool === 'bridge') return city.terrain[i] === T.WATER;
   if (city.terrain[i] === T.WATER) return false;
   if (city.terrain[i] === T.TREE) return tool === 'bulldoze' || tool === 'park';
+  if (tool === 'bulldoze') return true;
+  // Pavement climbs what a foundation cannot, so the two limits differ.
+  const limit = ROAD_TOOLS[tool] ? S.MAX_ROAD_SLOPE : S.MAX_BUILD_SLOPE;
+  if (tool !== 'park' && city.slope[i] > limit) return false;
+  if (SVC_TOOLS[tool] || tool === 'coal' || tool === 'oil') return !city.road[i] && !city.service[i];
   return true;
 }
 cursor.renderOrder = 5;
@@ -959,6 +1064,7 @@ function applyWorld() {
   reshapeGround();
   paintAll();
   computeFarmSites();
+  rebuildBridges();
   rebuildTrees();
   rebuildPlants();
   rebuildBuildings();
@@ -1163,18 +1269,24 @@ function showTitle() {
 }
 
 // -------------------------------------------------------------------- tools
-const RS = S.ROAD_SPEC;
+const RS = S.ROAD_SPEC, SS = S.SVC_SPEC;
 const TOOLS = [
   { id: 'dirt', k: 'Dirt', p: '$' + RS[S.ROAD.DIRT].cost, need: null, sw: '#7d6c50', key: '1' },
   { id: 'street', k: 'Street', p: '$' + RS[S.ROAD.STREET].cost, need: null, sw: '#54524c', key: '2' },
   { id: 'boulevard', k: 'Blvd', p: '$' + RS[S.ROAD.BOULEVARD].cost, need: null, sw: '#5f7c46', key: '3' },
-  { id: 'line', k: 'Wire', p: '$' + S.COST.line, need: null, sw: '#4b4438', key: '4' },
-  { id: 'bulldoze', k: 'Raze', p: '$' + S.COST.bulldoze + '/' + S.COST.fell, need: null, sw: '#9e3b2e', key: '5' },
-  { id: 'zoneR', k: 'Dwelling', p: '$' + S.COST.zone, need: null, sw: '#9aa872', key: '6' },
-  { id: 'zoneC', k: 'Trade', p: '$' + S.COST.zone, need: null, sw: '#7f96a8', key: '7' },
-  { id: 'zoneI', k: 'Works', p: '$' + S.COST.zone, need: null, sw: '#a89a72', key: '8' },
-  { id: 'coal', k: 'Coal Stn', p: '$' + S.PLANTS.coal.cost, need: null, sw: '#6a6258', key: '9' },
-  { id: 'oil', k: 'Oil Stn', p: '$' + S.PLANTS.oil.cost, need: 'plant_oil', sw: '#7a7469', key: '0' },
+  { id: 'bridge', k: 'Bridge', p: '$' + RS[S.ROAD.BRIDGE].cost, need: null, sw: '#8c8377', key: '4' },
+  { id: 'line', k: 'Wire', p: '$' + S.COST.line, need: null, sw: '#4b4438', key: '5' },
+  { id: 'bulldoze', k: 'Raze', p: '$' + S.COST.bulldoze + '/' + S.COST.fell, need: null, sw: '#9e3b2e', key: '6' },
+  { id: 'zoneR', k: 'Dwelling', p: '$' + S.COST.zone, need: null, sw: '#9aa872', key: '7' },
+  { id: 'zoneC', k: 'Trade', p: '$' + S.COST.zone, need: null, sw: '#7f96a8', key: '8' },
+  { id: 'zoneI', k: 'Works', p: '$' + S.COST.zone, need: null, sw: '#a89a72', key: '9' },
+  { id: 'coal', k: 'Coal', p: '$' + S.PLANTS.coal.cost, need: null, sw: '#6a6258', key: '0' },
+  { id: 'oil', k: 'Oil', p: '$' + S.PLANTS.oil.cost, need: 'plant_oil', sw: '#7a7469', key: 'o' },
+  { id: 'school', k: 'School', p: '$' + SS[S.SVC.SCHOOL].cost, need: null, sw: '#b8483a', key: 's' },
+  { id: 'fire', k: 'Fire Stn', p: '$' + SS[S.SVC.FIRE].cost, need: null, sw: '#8e3a2e', key: 'f' },
+  { id: 'police', k: 'Police', p: '$' + SS[S.SVC.POLICE].cost, need: 'police', sw: '#6d7480', key: 'l' },
+  { id: 'church', k: 'Church', p: '$' + SS[S.SVC.CHURCH].cost, need: 'church', sw: '#e4dfcc', key: 'h' },
+  { id: 'civic', k: 'Civic Hall', p: '$' + SS[S.SVC.CIVIC].cost, need: 'civic_hall', sw: '#d8d2c0', key: 'c' },
   { id: 'park', k: 'Green', p: '$' + S.COST.park, need: 'park', sw: '#5d8348', key: 'g' },
   { id: 'inspect', k: 'Inspect', p: 'free', need: null, sw: '#33488c', key: 'v' },
 ];
@@ -1222,7 +1334,8 @@ function showCard(x, y, sx, sy) {
 
   const rows = [];
   const put = (k, v) => rows.push(`<div class="cr"><span>${k}</span><b>${v}</b></div>`);
-  if (city.plant[i]) put('Use', 'Generating station');
+  if (city.service[i]) put('Use', S.SVC_SPEC[city.service[i]].name);
+  else if (city.plant[i]) put('Use', 'Generating station');
   else if (city.road[i]) put('Use', S.ROAD_SPEC[city.road[i]].name);
   else if (city.park[i]) put('Use', 'Public green');
   else if (city.zone[i]) {
@@ -1239,6 +1352,16 @@ function showCard(x, y, sx, sy) {
   }
   if (city.terrain[i] !== T.WATER) {
     put('Land value', VALUE_BAND(city.lv[i]));
+    put('Ground', city.slope[i] > S.MAX_ROAD_SLOPE ? 'Cliff'
+      : city.slope[i] > S.MAX_BUILD_SLOPE ? 'Too steep to build'
+        : city.slope[i] > S.MAX_BUILD_SLOPE * 0.6 ? 'Sloping' : 'Level');
+    if (city.zone[i] || city.bld[i]) {
+      const miss = [];
+      if (!city.cover[S.SVC.SCHOOL][i]) miss.push('school');
+      if (!city.cover[S.SVC.FIRE][i]) miss.push('fire');
+      if (!city.cover[S.SVC.POLICE][i]) miss.push('police');
+      put('Served by', miss.length ? 'no ' + miss.join(', no ') : 'all services');
+    }
     put('Frontage', city.roadDist[i] === 0 ? 'On the road'
       : !city.served[i] ? 'Out of reach'
         : city.roadDist[i] + (city.roadDist[i] === 1 ? ' lot away' : ' lots away'));
@@ -1310,6 +1433,12 @@ function apply(x, y) {
     case 'dirt': did = S.setRoad(city, x, y, S.ROAD.DIRT); break;
     case 'street': did = S.setRoad(city, x, y, S.ROAD.STREET); break;
     case 'boulevard': did = S.setRoad(city, x, y, S.ROAD.BOULEVARD); break;
+    case 'bridge': did = S.setRoad(city, x, y, S.ROAD.BRIDGE); if (did) rebuildBridges(); break;
+    case 'school': did = S.placeService(city, x, y, S.SVC.SCHOOL); break;
+    case 'fire': did = S.placeService(city, x, y, S.SVC.FIRE); break;
+    case 'police': did = S.placeService(city, x, y, S.SVC.POLICE); break;
+    case 'church': did = S.placeService(city, x, y, S.SVC.CHURCH); break;
+    case 'civic': did = S.placeService(city, x, y, S.SVC.CIVIC); break;
     case 'line': did = S.setLine(city, x, y); break;
     case 'bulldoze': did = S.bulldoze(city, x, y); break;
     case 'zoneR': did = S.setZone(city, x, y, Z.R); break;
@@ -1322,7 +1451,7 @@ function apply(x, y) {
   if (!did) return false;
   touch(x, y);
   if (tool === 'coal' || tool === 'oil') { touch(x + 1, y); touch(x, y + 1); touch(x + 1, y + 1); rebuildPlants(); }
-  if (tool === 'bulldoze') rebuildPlants();
+  if (tool === 'bulldoze') { rebuildPlants(); rebuildBridges(); }
   prevBld[idx(x, y)] = city.bld[idx(x, y)];
   bldDirty = true;
   return true;
@@ -1422,6 +1551,20 @@ const RANK_BLURB = {
 };
 // A district crossing into existence is worth a line of its own — it is the
 // city telling you it has decided a piece of itself is now a place.
+let firesSeen = 0;
+function noteFires() {
+  if (city.fires.length <= firesSeen) { firesSeen = city.fires.length; return; }
+  for (let k = firesSeen; k < city.fires.length; k++) {
+    const f = city.fires[k];
+    const d = S.districtAt(city, f.i);
+    rubble.set(f.i, RUBBLE_SEC * 2);
+    touch(f.i % W, (f.i / W) | 0);
+    if (playing) bulletin('Fire', d ? `A block burned in ${d.name}. No station in reach.`
+      : 'A block burned. No station in reach.');
+  }
+  firesSeen = city.fires.length;
+}
+
 const knownDistricts = new Set();
 function noteDistricts() {
   for (const d of city.districts) {
@@ -1449,6 +1592,8 @@ function updateHUD() {
   const net = city.ledger.net, nEl = $('net');
   nEl.textContent = (net >= 0 ? '+' : '−') + money(Math.abs(net)).slice(1);
   nEl.style.color = net >= 0 ? 'var(--green)' : 'var(--stamp)';
+  $('taxVal').textContent = Math.round(city.taxRate * 100) + '%';
+  $('brokeWarn').classList.toggle('hide', city.funded);
   $('rank').textContent = S.MILESTONES[city.rank].title;
 
   for (const [k, v] of [['dR', city.demand.r], ['dC', city.demand.c], ['dI', city.demand.i]]) {
@@ -1477,6 +1622,15 @@ function updateHUD() {
   }
 }
 
+// The tax lever. Raising it pays for the stations and puts people off in the
+// same stroke — without the second half the only sane rate would be the cap.
+for (const b of document.querySelectorAll('#taxRow [data-d]')) {
+  b.onclick = () => {
+    S.setTax(city, city.taxRate + (+b.dataset.d) * 0.01);
+    updateHUD();
+  };
+}
+
 // ------------------------------------------------------------ screen wiring
 const rollSeed = () => Math.floor(Math.random() * 999999);
 $('btnNew').onclick = () => {
@@ -1494,7 +1648,7 @@ $('btnRollName').onclick = () => { $('inName').value = nameFor(rollSeed()); };
 $('btnBegin').onclick = () => {
   const seed = Math.abs(parseInt($('inSeed').value, 10) || 1955) % 1000000;
   const name = ($('inName').value || '').trim() || nameFor(seed);
-  knownDistricts.clear();
+  knownDistricts.clear(); firesSeen = 0;
   startNew(name, seed);
 };
 $('btnNewBack').onclick = () => show('scrTitle');
@@ -1502,7 +1656,7 @@ $('btnLoad').onclick = () => show('scrLoad');
 $('btnLoadBack').onclick = () => show('scrTitle');
 $('btnContinue').onclick = ev => {
   const id = ev.currentTarget.dataset.id;
-  if (id) { knownDistricts.clear(); loadCity(id); }
+  if (id) { knownDistricts.clear(); firesSeen = 0; loadCity(id); }
 };
 $('btnSettingsT').onclick = () => { settingsFrom = 'scrTitle'; show('scrSettings'); };
 $('btnSettingsP').onclick = () => { settingsFrom = 'scrPause'; show('scrSettings'); };
@@ -1573,6 +1727,7 @@ function frame(now) {
     if (n) {
       noteChanges();
       noteDistricts();
+      noteFires();
       bldDirty = true;
       markStallChanges();
       if (ovrMode !== 'none') { ovrAcc += dt; if (ovrAcc > 0.4) { paintOverlay(); ovrAcc = 0; } }

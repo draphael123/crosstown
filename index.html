@@ -60,8 +60,8 @@
     border:2px solid var(--stamp); border-radius:2px; padding:2px 8px; transform:rotate(-1.6deg); opacity:.9; }
 
   /* ------------------------------------------------------------ palette */
-  #palette { left:16px; bottom:16px; padding:9px 12px 11px 18px; width:248px; }
-  .tools { display:grid; grid-template-columns:repeat(3, 1fr); gap:4px; }
+  #palette { left:16px; bottom:16px; padding:9px 12px 11px 18px; width:322px; }
+  .tools { display:grid; grid-template-columns:repeat(4, 1fr); gap:4px; }
   .tool { position:relative; background:rgba(255,255,255,.30); border:1px solid var(--rule);
     padding:6px 3px 5px; text-align:center; cursor:pointer; transition:background .1s; }
   .tool:hover { background:rgba(255,255,255,.62); }
@@ -74,7 +74,15 @@
   .swatch { position:absolute; left:3px; top:3px; width:6px; height:6px; border:1px solid rgba(0,0,0,.4); }
 
   /* --------------------------------------------------------------- gauges */
-  #gauges { right:16px; bottom:16px; padding:9px 14px 11px 18px; width:214px; }
+  #gauges { right:16px; bottom:16px; padding:9px 14px 11px 18px; width:236px; }
+  .taxctl { display:inline-flex; align-items:center; gap:5px; }
+  .taxctl button { font-family:var(--disp); font-size:11px; font-weight:700; line-height:1;
+    background:rgba(255,255,255,.34); border:1px solid var(--rule); padding:1px 6px 2px; cursor:pointer; }
+  .taxctl button:hover { background:var(--ink); color:var(--paper); }
+  .taxctl b { min-width:30px; text-align:center; }
+  #brokeWarn { margin-top:6px; font-family:var(--disp); font-size:9px; font-weight:600;
+    letter-spacing:.12em; text-transform:uppercase; color:var(--paper); background:var(--stamp);
+    padding:3px 6px; text-align:center; }
   .dem { display:flex; align-items:center; gap:7px; margin:5px 0; font-size:10px; letter-spacing:.10em; }
   .dem i { font-style:normal; font-family:var(--disp); font-weight:600; width:11px; color:var(--ink2); }
   .bar { position:relative; flex:1; height:9px; background:rgba(80,68,44,.20);
@@ -108,7 +116,7 @@
   @keyframes drop { from { opacity:0; transform:translateY(-14px) rotate(-1deg); } to { opacity:1; } }
 
   /* ------------------------------------------------------- survey overlays */
-  .ovr { display:grid; grid-template-columns:repeat(4,1fr); gap:3px; }
+  .ovr { display:grid; grid-template-columns:repeat(5,1fr); gap:3px; }
   .ovr button { font-family:var(--disp); font-size:9px; font-weight:600; letter-spacing:.09em;
     text-transform:uppercase; background:rgba(255,255,255,.30); border:1px solid var(--rule);
     padding:4px 2px; cursor:pointer; }
@@ -248,6 +256,10 @@
     <div class="row"><span>Residents</span><b id="pop">0</b></div>
     <div class="row"><span>Employed</span><b id="jobs">0</b></div>
     <div class="row"><span>Quarterly</span><b id="net">—</b></div>
+    <div class="row" id="taxRow"><span>Rate</span>
+      <span class="taxctl"><button data-d="-1">&minus;</button><b id="taxVal">7%</b><button data-d="1">+</button></span>
+    </div>
+    <div id="brokeWarn" class="hide">Overdrawn &mdash; services suspended</div>
     <div id="rank">Township</div>
   </div>
 
@@ -263,6 +275,7 @@
       <button data-o="value">Value</button>
       <button data-o="power">Current</button>
       <button data-o="smoke">Smoke</button>
+      <button data-o="cover">Served</button>
     </div>
     <div class="ttl" style="margin-top:9px">Demand &amp; Service</div>
     <div class="dem"><i>R</i><div class="bar"><div class="fill" id="dR"></div><div class="mid"></div></div></div>
@@ -281,7 +294,7 @@
     <div id="season">Spring</div>
   </div>
 
-  <div id="help">drag to draw &nbsp;·&nbsp; right-drag or WASD to pan &nbsp;·&nbsp; Q / E rotate &nbsp;·&nbsp; Z / X zoom &nbsp;·&nbsp; 1-0 / G / V tools &nbsp;·&nbsp; Esc menu</div>
+  <div id="help">drag to draw &nbsp;·&nbsp; right-drag or WASD to pan &nbsp;·&nbsp; Q / E rotate &nbsp;·&nbsp; Z / X zoom &nbsp;·&nbsp; 1-0 / letters for tools &nbsp;·&nbsp; Esc menu</div>
 
   <div id="card" class="paper">
     <div id="cardAddr">—</div>

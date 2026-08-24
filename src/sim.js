@@ -58,22 +58,47 @@ const DRAW = {
   [Z.I]: [0, 6, 16, 38],
 };
 
+// Upkeep is the whole reason the treasury is interesting. At the original
+// numbers a well-run city of 9,000 ran a 2,400/quarter surplus against a 570
+// bill and money was a readout, not a constraint.
 export const PLANTS = {
-  coal: { supply: 2200, cost: 3000, upkeep: 90, soot: 1.0, w: 2, h: 2 },
-  oil: { supply: 4400, cost: 6500, upkeep: 190, soot: 0.55, w: 2, h: 2 },
+  coal: { supply: 2200, cost: 3000, upkeep: 300, soot: 1.0, w: 2, h: 2 },
+  oil: { supply: 4400, cost: 6500, upkeep: 620, soot: 0.55, w: 2, h: 2 },
 };
 
 export const COST = { line: 6, zone: 30, park: 140, bulldoze: 4, fell: 9 };
+
+// Services work by RADIUS, not by network. Power already occupies the
+// source-and-network shape; giving water or anything else the same shape would
+// double the plumbing without adding a new kind of decision. A radius you place
+// well is a different problem from a wire you drag.
+export const SVC = { NONE: 0, SCHOOL: 1, FIRE: 2, POLICE: 3, CIVIC: 4, CHURCH: 5 };
+export const SVC_SPEC = {
+  [SVC.SCHOOL]: { key: 'school', name: 'Schoolhouse', cost: 900, upkeep: 130, radius: 17, need: null },
+  [SVC.FIRE]: { key: 'fire', name: 'Fire station', cost: 1100, upkeep: 150, radius: 15, need: null },
+  [SVC.POLICE]: { key: 'police', name: 'Police station', cost: 1000, upkeep: 140, radius: 15, need: 'police' },
+  [SVC.CIVIC]: { key: 'civic', name: 'Civic hall', cost: 2600, upkeep: 240, radius: 20, need: 'civic_hall' },
+  [SVC.CHURCH]: { key: 'church', name: 'Church', cost: 700, upkeep: 60, radius: 13, need: 'church' },
+};
+const SVC_LIST = [SVC.SCHOOL, SVC.FIRE, SVC.POLICE, SVC.CIVIC, SVC.CHURCH];
+
+// Chance per tick that an uncovered standing building catches. Deliberately
+// tiny: this is the first thing in the game that can go wrong on its own, and
+// it should feel like bad luck you could have insured against, not weather.
+const FIRE_CHANCE = 0.000012;
 
 // Three grades of road, trading money against how far back a lot can sit from
 // them and what they do to the land either side. No traffic model is involved:
 // the decision is frontage reach and land value, both of which the sim already
 // runs on.
-export const ROAD = { NONE: 0, DIRT: 1, STREET: 2, BOULEVARD: 3 };
+export const ROAD = { NONE: 0, DIRT: 1, STREET: 2, BOULEVARD: 3, BRIDGE: 4 };
 export const ROAD_SPEC = {
-  [ROAD.DIRT]: { key: 'dirt', name: 'Dirt track', cost: 4, upkeep: 0.12, reach: 2 },
-  [ROAD.STREET]: { key: 'street', name: 'Street', cost: 12, upkeep: 0.40, reach: 3 },
-  [ROAD.BOULEVARD]: { key: 'boulevard', name: 'Boulevard', cost: 40, upkeep: 1.20, reach: 4 },
+  [ROAD.DIRT]: { key: 'dirt', name: 'Dirt track', cost: 4, upkeep: 0.30, reach: 2 },
+  [ROAD.STREET]: { key: 'street', name: 'Street', cost: 12, upkeep: 0.95, reach: 3 },
+  [ROAD.BOULEVARD]: { key: 'boulevard', name: 'Boulevard', cost: 40, upkeep: 2.60, reach: 4 },
+  // The one road that goes ON water, and the only way across the river — which
+  // cuts every seed in two. Without it a third of the tract is unreachable.
+  [ROAD.BRIDGE]: { key: 'bridge', name: 'Bridge', cost: 90, upkeep: 4.5, reach: 1, water: true },
 };
 const MAX_REACH = 4;        // the widest reach any grade has
 
@@ -82,6 +107,9 @@ const MAX_REACH = 4;        // the widest reach any grade has
 // actually gets built, and the worst land in the city looks like the best.
 export const SHACK_LV = 0.28;
 export const CAP_SHACK = 3;
+// Computed live from land value, not stored at build time — so a cottage whose
+// ground is spoiled after the fact BECOMES a shack rather than standing there
+// pretending nothing happened.
 export const isShack = (c, i) => c.zone[i] === Z.R && c.bld[i] === 1 && c.lv[i] < SHACK_LV;
 const GROWTH_SAMPLES = 220; // zoned tiles considered per tick
 const LV_EVERY = 4;         // ticks between land-value recomputes
@@ -96,9 +124,9 @@ const QUARTER = 12;         // ticks per budget quarter
 export const MILESTONES = [
   { pop: 0, title: 'Township', maxTier: 1, unlock: [] },
   { pop: 350, title: 'Village', maxTier: 2, unlock: ['park'] },
-  { pop: 1500, title: 'Town', maxTier: 2, unlock: ['civic_hall'] },
-  { pop: 3000, title: 'City', maxTier: 3, unlock: ['plant_oil'] },
-  { pop: 12000, title: 'Metropolis', maxTier: 3, unlock: ['civic_tower'] },
+  { pop: 1500, title: 'Town', maxTier: 2, unlock: ['church'] },
+  { pop: 3000, title: 'City', maxTier: 3, unlock: ['plant_oil', 'civic_hall'] },
+  { pop: 12000, title: 'Metropolis', maxTier: 3, unlock: [] },
 ];
 
 // ------------------------------------------------------------------ terrain
@@ -126,9 +154,19 @@ function riverCentre(u, p) {
   return 0.5 + 0.15 * Math.sin(u * 3.1 + p.a) + 0.07 * Math.sin(u * 7.7 + p.b);
 }
 
+// Elevation is in WORLD units, straight through to the renderer. The old map
+// had 1.03 units of relief across the whole tract against a 3.4-unit office
+// tower, and a steepest tile step of 3.5 degrees — a flat plane with a wobble,
+// on which no grade rule could ever fire. These numbers are chosen so slope is
+// something you route around.
+export const MAX_BUILD_SLOPE = 0.16;   // steeper than this and no lot will take a building
+export const MAX_ROAD_SLOPE = 0.30;    // pavement can climb what a foundation cannot
+export const SLOPE_COST = 2.6;         // road price multiplier per unit of grade
+
 export function makeTerrain(seed = 1955) {
   const rand = mulberry32(seed);
   const big = makeLattice(rand, 6), mid = makeLattice(rand, 13), fine = makeLattice(rand, 27);
+  const sharp = makeLattice(rand, 47);
   const trees = makeLattice(rand, 19);
   const p = { a: rand() * 6.28, b: rand() * 6.28 };
 
@@ -137,18 +175,41 @@ export function makeTerrain(seed = 1955) {
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const u = x / (W - 1), v = y / (H - 1), i = idx(x, y);
-      const e = 0.60 * latAt(big, u, v) + 0.30 * latAt(mid, u, v) + 0.10 * latAt(fine, u, v);
       const bank = Math.abs(v - riverCentre(u, p));
       const width = 0.020 + 0.010 * latAt(mid, u * 0.7, 0.4);
       if (bank < width) { terrain[i] = T.WATER; elev[i] = 0; continue; }
-      elev[i] = e * 0.35 + Math.min(0.25, (bank - width) * 1.6);
-      // Two octaves: one lattice alone lays woodland down in obvious diagonal
-      // stripes, which reads as a texture bug rather than as forest.
+      // Four octaves, then a power curve: raising the sum to a power flattens
+      // the low ground into broad valley floors you can actually plat, and
+      // leaves the high ground as distinct hills instead of general lumpiness.
+      const base = 0.50 * latAt(big, u, v) + 0.28 * latAt(mid, u, v)
+        + 0.14 * latAt(fine, u, v) + 0.08 * latAt(sharp, u, v);
+      const hill = Math.pow(base, 1.9);
+      // The valley floor holds the river: ground climbs as you leave the bank.
+      elev[i] = hill * 5.6 + Math.min(1.1, (bank - width) * 4.0);
       const wood = 0.62 * latAt(trees, u * 1.6, v * 1.6) + 0.38 * latAt(fine, u * 3.1, v * 2.7);
       if (wood > 0.60 && bank > width * 1.7) terrain[i] = T.TREE;
     }
   }
-  return { terrain, elev, riverPhase: p };
+
+  // Steepest step to any of the four neighbours. Computed once — nothing in the
+  // game moves earth, so this never changes after generation.
+  const slope = new Float32Array(N);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = idx(x, y);
+    if (terrain[i] === T.WATER) continue;
+    let m = 0;
+    for (let k = 0; k < 4; k++) {
+      const nx = x + (k === 0 ? 1 : k === 1 ? -1 : 0);
+      const ny = y + (k === 2 ? 1 : k === 3 ? -1 : 0);
+      if (!inBounds(nx, ny)) continue;
+      const j = idx(nx, ny);
+      if (terrain[j] === T.WATER) continue;
+      const d = Math.abs(elev[i] - elev[j]);
+      if (d > m) m = d;
+    }
+    slope[i] = m;
+  }
+  return { terrain, elev, slope, riverPhase: p };
 }
 
 // ---------------------------------------------------------------------- city
@@ -166,11 +227,11 @@ function attachRng(c) {
 }
 
 export function makeCity(seed = 1955) {
-  const { terrain, elev, riverPhase } = makeTerrain(seed);
+  const { terrain, elev, slope, riverPhase } = makeTerrain(seed);
   const c = {
     seed, riverPhase, randState: (seed ^ 0x9e37) >>> 0,
     w: W, h: H,
-    terrain, elev,
+    terrain, elev, slope,
     zone: new Uint8Array(N),
     road: new Uint8Array(N),
     line: new Uint8Array(N),
@@ -181,6 +242,12 @@ export function makeCity(seed = 1955) {
     served: new Uint8Array(N),      // within its road's reach, whatever grade
     reachRem: new Int8Array(N),     // scratch for the reach relaxation
     stall: new Uint8Array(N),
+    service: new Uint8Array(N),          // SVC.* per tile
+    cover: {},                           // SVC.* -> Uint8Array of coverage
+    services: [],                        // {x,y,kind}
+    svcVersion: 0,
+    funded: true,                        // false once the treasury is in the red
+    fires: [],                           // recent burnings, for the renderer
     districts: [],
     districtOf: new Uint8Array(N),   // 0 = none, else index into districts + 1
     roadDist: new Uint8Array(N).fill(255),
@@ -200,9 +267,15 @@ export function makeCity(seed = 1955) {
     power: { supply: 0, draw: 0, short: false },
     ledger: { income: 0, upkeep: 0, net: 0 },
     rank: 0, maxTier: 1,
-    unlocked: new Set(['road', 'line', 'plant_coal', 'zone', 'bulldoze']),
+    // A constable, a schoolhouse and a fire station are things a township has
+    // from the start. Gating police behind Town rank created a deadlock: crime
+    // held land value down, which held the tier down, which held the population
+    // below the rank that would have unlocked the remedy.
+    unlocked: new Set(['road', 'line', 'plant_coal', 'zone', 'bulldoze',
+      'school', 'fire', 'police']),
     log: [],
   };
+  for (const k of SVC_LIST) c.cover[k] = new Uint8Array(N);
   return attachRng(c);
 }
 
@@ -211,8 +284,8 @@ export function makeCity(seed = 1955) {
 // encoding takes a 25,600-tile map down to a few hundred pairs. Elevation is a
 // pure function of the seed and is never saved; terrain IS saved, because
 // razing a wood mutates it.
-export const SAVE_VERSION = 2;
-const GRIDS = ['terrain', 'zone', 'road', 'line', 'park', 'bld', 'plant'];
+export const SAVE_VERSION = 3;
+const GRIDS = ['terrain', 'zone', 'road', 'line', 'park', 'bld', 'plant', 'service'];
 
 function rle(a) {
   const out = [];
@@ -243,6 +316,7 @@ export function serialize(c, name) {
     demand: { ...c.demand },
     unlocked: [...c.unlocked],
     plants: c.plants.map(p => ({ x: p.x, y: p.y, kind: p.kind })),
+    services: c.services.map(v => ({ x: v.x, y: v.y, kind: v.kind })),
     pop: { ...c.pop },
   };
   for (const g of GRIDS) o[g] = rle(c[g]);
@@ -250,20 +324,24 @@ export function serialize(c, name) {
 }
 
 export function deserialize(o) {
-  if (!o || (o.v !== SAVE_VERSION && o.v !== 1)) return null;
+  if (!o || !(o.v >= 1 && o.v <= SAVE_VERSION)) return null;
   const c = makeCity(o.seed);
   for (const g of GRIDS) c[g] = unrle(o[g], N);
   // v1 stored roads as a plain 1/0 flag. Left alone those all read as DIRT and
   // an old city would silently lose a tile of frontage everywhere.
   if (o.v === 1) for (let i = 0; i < N; i++) if (c.road[i]) c.road[i] = ROAD.STREET;
+  if (o.v < 3) { c.service.fill(0); }   // v1/v2 had no services at all
   c.t = o.t; c.funds = o.funds; c.taxRate = o.taxRate;
   c.rank = o.rank; c.maxTier = o.maxTier; c.randState = o.randState >>> 0;
   c.demand = { ...o.demand };
   c.unlocked = new Set(o.unlocked);
   c.plants = o.plants.map(p => ({ ...p }));
+  c.services = (o.services || []).map(v => ({ ...v }));
+  c.svcVersion++; c._svcDrawn = -1;
   c.dirtyRoads = true; c.dirtyZones = true;
   rebuildZonedList(c);
   recomputeRoadDist(c);
+  recomputeCoverage(c);
   recomputeLandValue(c);
   recomputePower(c);
   tally(c);
@@ -275,18 +353,37 @@ export function deserialize(o) {
 // first thing you draw. Fell it with Raze and then build. Parks are the one
 // exception — laying a green over standing trees is not clearing the land for
 // construction, it is the point of a green.
-const buildable = (c, i) => c.terrain[i] !== T.WATER && c.terrain[i] !== T.TREE && !c.plant[i];
-const buildableForPark = (c, i) => c.terrain[i] !== T.WATER && !c.plant[i];
+// Slope is deliberately NOT folded in here. Roads and foundations tolerate very
+// different grades, and putting the building limit inside the shared predicate
+// silently held pavement to it too — MAX_ROAD_SLOPE was dead code.
+const clearGround = (c, i) => c.terrain[i] !== T.WATER && c.terrain[i] !== T.TREE && !c.plant[i];
+const buildable = (c, i) => clearGround(c, i) && c.slope[i] <= MAX_BUILD_SLOPE;
+const buildableForPark = (c, i) => c.terrain[i] !== T.WATER && !c.plant[i]
+  && c.slope[i] <= MAX_ROAD_SLOPE;
 
 export function spend(c, n) { if (c.funds < n) return false; c.funds -= n; return true; }
+
+// What a stretch of road costs here: grade, plus the earthwork the slope forces.
+export function roadCost(c, i, grade) {
+  const spec = ROAD_SPEC[grade];
+  if (!spec) return Infinity;
+  if (spec.water) return spec.cost;
+  return Math.round(spec.cost * (1 + c.slope[i] * SLOPE_COST));
+}
 
 export function setRoad(c, x, y, grade = ROAD.STREET) {
   if (!inBounds(x, y)) return false;
   const spec = ROAD_SPEC[grade];
   if (!spec) return false;
   const i = idx(x, y);
-  if (c.road[i] === grade || !buildable(c, i)) return false;
-  if (!spend(c, spec.cost)) return false;          // regrading costs the full price
+  if (c.road[i] === grade) return false;
+  if (spec.water) {
+    if (c.terrain[i] !== T.WATER) return false;    // a bridge only spans water
+  } else {
+    if (!clearGround(c, i)) return false;
+    if (c.slope[i] > MAX_ROAD_SLOPE) return false; // too steep to carry a road
+  }
+  if (!spend(c, roadCost(c, i, grade))) return false;
   c.road[i] = grade; c.zone[i] = Z.NONE; c.bld[i] = 0; c.park[i] = 0;
   c.dirtyRoads = true; c.dirtyZones = true;
   return true;
@@ -309,6 +406,11 @@ export function setZone(c, x, y, z) {
   c.zone[i] = z; c.bld[i] = 0; c.park[i] = 0;
   c.dirtyZones = true;
   return true;
+}
+
+export function setTax(c, rate) {
+  c.taxRate = Math.max(TAX_MIN, Math.min(TAX_MAX, rate));
+  return c.taxRate;
 }
 
 export function setPark(c, x, y) {
@@ -343,6 +445,20 @@ export function placePlant(c, x, y, kind = 'coal') {
   return true;
 }
 
+export function placeService(c, x, y, kind) {
+  const spec = SVC_SPEC[kind];
+  if (!spec) return false;
+  if (spec.need && !c.unlocked.has(spec.need)) return false;
+  if (!inBounds(x, y)) return false;
+  const i = idx(x, y);
+  if (c.road[i] || c.service[i] || !buildable(c, i)) return false;
+  if (!spend(c, spec.cost)) return false;
+  c.service[i] = kind; c.zone[i] = Z.NONE; c.bld[i] = 0; c.park[i] = 0;
+  c.services.push({ x, y, kind });
+  c.svcVersion++; c.dirtyZones = true;
+  return true;
+}
+
 export function bulldoze(c, x, y) {
   if (!inBounds(x, y)) return false;
   const i = idx(x, y);
@@ -356,6 +472,13 @@ export function bulldoze(c, x, y) {
     if (!spend(c, COST.bulldoze * 4)) return false;
     for (let dy = 0; dy < P.h; dy++) for (let dx = 0; dx < P.w; dx++) c.plant[idx(p.x + dx, p.y + dy)] = 0;
     c.plants.splice(k, 1);
+    return true;
+  }
+  if (c.service[i]) {
+    if (!spend(c, COST.bulldoze * 3)) return false;
+    const k = c.services.findIndex(v => v.x === x && v.y === y);
+    if (k >= 0) c.services.splice(k, 1);
+    c.service[i] = 0; c.svcVersion++; c.dirtyZones = true;
     return true;
   }
   const wood = c.terrain[i] === T.TREE;
@@ -456,6 +579,25 @@ function recomputePower(c) {
   c.power.short = cut > 0;
 }
 
+// ---------------------------------------------------------------- coverage
+// Stamped circles, recomputed only when the set of service buildings changes.
+// An unfunded city keeps its buildings and loses their effect, which is a state
+// you can see and reverse — unlike quietly deleting them.
+function recomputeCoverage(c) {
+  for (const k of SVC_LIST) c.cover[k].fill(0);
+  if (!c.funded) return;
+  for (const sv of c.services) {
+    const spec = SVC_SPEC[sv.kind], r = spec.radius, rr = r * r;
+    const field = c.cover[sv.kind];
+    const x0 = Math.max(0, sv.x - r), x1 = Math.min(W - 1, sv.x + r);
+    const y0 = Math.max(0, sv.y - r), y1 = Math.min(H - 1, sv.y + r);
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const dx = x - sv.x, dy = y - sv.y;
+      if (dx * dx + dy * dy <= rr) field[idx(x, y)] = 1;
+    }
+  }
+}
+
 // -------------------------------------------------------------- land value
 // A coarse 40x40 field, blurred. Cheap, and the diffusion is the whole point:
 // a park three blocks away should still be worth something to you.
@@ -487,6 +629,19 @@ function recomputeLandValue(c) {
     else if (c.road[i] === ROAD.BOULEVARD) amen[ci] += 0.085;
     else if (c.road[i] === ROAD.DIRT) nuis[ci] += 0.03;
     if (c.plant[i]) nuis[ci] += PLANTS[c.plant[i] === 1 ? 'coal' : 'oil'].soot * 0.45;
+    if (c.service[i] === SVC.CIVIC) amen[ci] += 0.55;
+    else if (c.service[i] === SVC.CHURCH) amen[ci] += 0.30;
+    // Crime is not its own accumulator: it is what unpoliced housing does to
+    // the value of the ground around it, which the blur already models.
+    // Small per building on purpose: housing is DENSE. Industry contributes
+    // 0.16 from a handful of lots per cell; residential can fill all sixteen,
+    // so the same coefficient would swamp every other term on the map.
+    if (c.bld[i] && c.zone[i] === Z.R && !c.cover[SVC.POLICE][i]) nuis[ci] += 0.008 * c.bld[i];
+    // Only genuinely awkward ground, and lightly. At 0.6 of the limit this
+    // caught roughly a third of the map and dragged the whole city's land value
+    // under the tier-2 threshold — a map-wide penalty reads as a broken game,
+    // not as difficult terrain.
+    if (c.slope[i] > MAX_BUILD_SLOPE * 0.9) nuis[ci] += 0.03;
   }
   const a2 = new Float32Array(LVW * LVH), n2 = new Float32Array(LVW * LVH);
   blur(amen, a2, LVW, LVH); blur(a2, amen, LVW, LVH); blur(amen, a2, LVW, LVH);
@@ -522,7 +677,10 @@ function updateDemand(c) {
   const targetRes = Math.max(40, (jobsC + jobsI) * HOUSEHOLDS);
   const targetI = Math.max(30, workforce * WORK_I);
   const targetC = Math.max(12, workforce * WORK_C);
-  const cl = v => v < -1 ? -1 : v > 1 ? 1 : v;
+  // Tax is a real lever both ways: it pays for the services and it puts people
+  // off. Without the drag, the only sane rate would be the maximum.
+  const drag = Math.max(0.25, Math.min(1.35, 1 - (c.taxRate - TAX_BASE) * 5.5));
+  const cl = v => (v < -1 ? -1 : v > 1 ? 1 : v) * (v > 0 ? drag : 1);
   const goal = {
     r: cl((targetRes - res) / Math.max(60, res * 0.5)),
     c: cl((targetC - jobsC) / Math.max(25, targetC * 0.6)),
@@ -538,7 +696,10 @@ function updateDemand(c) {
 export function tierCeiling(c, i) {
   const v = c.lv[i];
   const byValue = v < 0.30 ? 1 : v < 0.58 ? 2 : 3;
-  return Math.min(byValue, c.maxTier);
+  // No school in reach, no families: dwellings stay at one storey however
+  // good the land or how open the charter.
+  const bySchool = (c.zone[i] === Z.R && !c.cover[SVC.SCHOOL][i]) ? 1 : 3;
+  return Math.min(byValue, bySchool, c.maxTier);
 }
 
 // An empty lot draws nothing of its own yet, so it asks whether current
@@ -669,6 +830,19 @@ export function computeDistricts(c) {
 }
 export const districtAt = (c, i) => c.districts[c.districtOf[i] - 1] || null;
 
+// Fire only touches what is standing and out of reach of a station.
+function fires(c) {
+  if (!c.services.length && c.t < 60) return;    // a grace period on a new city
+  const cover = c.cover[SVC.FIRE];
+  for (const i of c._zonedList) {
+    if (!c.bld[i] || cover[i]) continue;
+    if (c.rand() >= FIRE_CHANCE) continue;
+    c.fires.push({ i, t: c.t, tier: c.bld[i], zone: c.zone[i] });
+    c.bld[i] = 0;
+  }
+  if (c.fires.length > 24) c.fires.splice(0, c.fires.length - 24);
+}
+
 function rebuildZonedList(c) {
   if (!c.dirtyZones) return;
   const list = [];
@@ -690,6 +864,8 @@ function tally(c) {
   c.pop.res = res; c.pop.jobsC = jobsC; c.pop.jobsI = jobsI;
 }
 
+export const TAX_MIN = 0.02, TAX_MAX = 0.20, TAX_BASE = 0.07;
+
 function budget(c) {
   const { res, jobsC, jobsI } = c.pop;
   const income = res * c.taxRate * 3.2 + jobsC * c.taxRate * 4.0 + jobsI * c.taxRate * 3.4;
@@ -697,11 +873,16 @@ function budget(c) {
   for (let i = 0; i < N; i++) {
     if (c.road[i]) upkeep += ROAD_SPEC[c.road[i]].upkeep;
     if (c.line[i]) upkeep += 0.15;
-    if (c.park[i]) upkeep += 3.0;
+    if (c.park[i]) upkeep += 6.0;
   }
   for (const p of c.plants) upkeep += PLANTS[p.kind].upkeep;
+  for (const sv of c.services) upkeep += SVC_SPEC[sv.kind].upkeep;
   c.ledger = { income, upkeep, net: income - upkeep };
   c.funds += income - upkeep;
+  // No fail state: an overdrawn city does not die, its services simply stop
+  // working until the books are back in order. Visible, and reversible.
+  const funded = c.funds >= 0;
+  if (funded !== c.funded) { c.funded = funded; c.svcVersion++; }
 }
 
 function checkRank(c) {
@@ -718,11 +899,13 @@ function checkRank(c) {
 export function stepCity(c) {
   rebuildZonedList(c);
   if (c.dirtyRoads) recomputeRoadDist(c);
+  if (c.svcVersion !== c._svcDrawn) { recomputeCoverage(c); c._svcDrawn = c.svcVersion; }
   if (c.t % LV_EVERY === 0) recomputeLandValue(c);
   recomputePower(c);
   tally(c);
   updateDemand(c);
   growthPass(c);
+  fires(c);
   recomputePower(c);
   tally(c);
   markStalls(c);

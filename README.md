@@ -101,6 +101,58 @@ stack smoke, lot lines, autosave. Fog and shadows are compiled into the shader,
 so toggling either forces a material rebuild — without it the switch appears to
 do nothing at all.
 
+## The land
+
+Terrain used to be 1.03 world units of relief across the whole tract against a
+3.4-unit office tower, with a steepest tile step of 3.5 degrees — a flat plane
+with a wobble, on which no grade rule could ever fire. It now runs about 5.2
+units with steps up to 27 degrees, from four noise octaves put through a power
+curve: the curve flattens the low ground into valley floors you can plat and
+leaves the high ground as distinct hills.
+
+- lots refuse ground steeper than `MAX_BUILD_SLOPE`; about 78% of dry land takes a building
+- roads climb to `MAX_ROAD_SLOPE`, and cost more the steeper they go
+- **bridges** are the one road that goes ON water, and the only way over a river
+  that cuts every seed in two
+
+One bug worth recording: the slope test was first folded into the shared
+`buildable()` predicate, which roads also call — so pavement was silently held
+to the *building* limit and `MAX_ROAD_SLOPE` was dead code.
+
+## Services
+
+By RADIUS, not by network. Power already occupies the source-and-network shape;
+giving water the same shape would double the plumbing without adding a new kind
+of decision, so there is no water system and won't be.
+
+| | covers | and if it doesn't |
+|---|---|---|
+| **Schoolhouse** | 17 | dwellings never pass one storey |
+| **Fire station** | 15 | blocks burn down |
+| **Police station** | 15 | crime drags land value |
+| **Church**, **Civic hall** | 13 / 20 | amenity only |
+
+Crime is not its own accumulator — it is what unpoliced housing does to the
+ground around it, which the land-value blur already models. Its coefficient is
+deliberately tiny (0.008 against industry's 0.16) because housing is *dense*:
+industry contributes from a handful of lots per cell, residential can fill all
+sixteen, and the same number swamped every other term on the map.
+
+Police used to unlock at Town rank. That was a deadlock: crime held land value
+down, which held the tier down, which held population below the rank that would
+have unlocked the remedy. A township has a constable from the start.
+
+## Money
+
+Upkeep was tuned until it bites. At the old numbers a well-run city of 9,000 ran
+a 2,400/quarter surplus against a 570 bill, and the treasury was a readout.
+There is still no fail state: an overdrawn city does not die, its services stop
+working until the books are back in order — visible, and reversible.
+
+The tax rate is a lever in the ledger. It pays for the stations and it puts
+people off in the same stroke; without the second half the only sane rate would
+be the cap.
+
 ## Making it feel alive
 
 Traffic wanders the road graph — no pathfinding, a car just holds two tiles and
@@ -178,5 +230,5 @@ anything, so it waits until there is one.
     src/sim.js          pure, headless, deterministic — no DOM, no three.js
     src/main.js         renderer, input, HUD
     src/audio.js        synthesised ambience — no assets, nothing to vendor
-    test/sim-test.mjs   71 assertions, positive control first
+    test/sim-test.mjs   100+ assertions, positive control first
     vendor/             three.js, vendored — a CDN import map is a dead screen
