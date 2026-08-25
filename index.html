@@ -20,6 +20,10 @@
     font-family:var(--type); color:var(--ink);
     touch-action:none; overscroll-behavior:none; -webkit-user-select:none; user-select:none; }
   #c { display:block; width:100vw; height:100vh; height:100dvh; cursor:crosshair; }
+  /* Sits over the canvas and under every panel. Costs nothing and stops the
+     render reading as a flat rectangle of pixels. */
+  #vignette { position:fixed; inset:0; z-index:2; pointer-events:none;
+    background:radial-gradient(120% 105% at 50% 44%, rgba(0,0,0,0) 52%, rgba(24,20,14,.30) 100%); }
   .hide { display:none !important; }
   button { font:inherit; color:inherit; }
 
@@ -276,6 +280,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
+<div id="vignette"></div>
 
 <div id="hud" class="hide">
   <div id="mast" class="paper">

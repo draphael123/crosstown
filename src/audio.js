@@ -193,9 +193,28 @@ export function makeAudio() {
     if (onTrack) onTrack(t);
   }
 
+  // Three short cues for the three kinds of action. Synthesised like the rest —
+  // no files, and they sit in the same gain structure so the Sound switch
+  // silences them along with everything else.
+  function blip(freq, dur, type, gain, sweep) {
+    if (!running || !enabled) return;
+    const t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    if (sweep) o.frequency.exponentialRampToValueAtTime(Math.max(40, freq * sweep), t + dur);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(gain, t + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.0004, t + dur);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+
   return {
     start,
     loadPlaylist,
+    tick: () => blip(880, 0.05, 'square', 0.020, 1.0),
+    chime: () => { blip(660, 0.14, 'triangle', 0.055, 1.5); blip(990, 0.18, 'sine', 0.030, 1.0); },
+    thud: () => blip(150, 0.20, 'sawtooth', 0.055, 0.45),
     get tracks() { return tracks; },
     get nowPlaying() { return tracks.length ? tracks[order[cursor]] : null; },
     setOnTrack(fn) { onTrack = fn; },

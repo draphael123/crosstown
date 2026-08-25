@@ -198,6 +198,36 @@ One bug worth recording: `roadList` was refreshed only inside `stepTraffic`, so
 turning traffic off in settings left it permanently stale and Street level set
 you down in the middle of a field.
 
+## The look
+
+**Water** is a real surface, not bands painted into the ground texture. Depth is
+baked per vertex from the distance to the nearest bank and drives both the
+colour and the transparency — shallow shows the silt, deep does not, and that
+gradient is most of what makes a river read as water. Three drifting wave trains
+interfere so the glints ride the crests; one alone reads as a moving stripe.
+It also stopped re-uploading the whole 640x640 ground texture three times a
+second.
+
+**Sky** is a dome rather than a background image, because `scene.background`
+does not turn with the camera and street level lets you look around. The horizon
+sits at the sphere's equator — spreading the gradient zenith-to-nadir put the
+horizon colour underground and left the visible band a flat wash. Stars are
+`Points`, not texels: a 1px star painted on a 340-unit dome is a 15-pixel blob.
+
+**Beyond the tract** is a frame of open country. Without it the map ends in a
+hard diamond with sky beneath it. It has to be a frame and not a sheet — a
+single plane across the map sits above the river bed and paints over the water.
+
+**Trees** come in three kinds with trunks, spruce favouring the high ground.
+One cone repeated ten thousand times is a Christmas-tree farm, not a wood.
+**Hedgerows** mark where one field meets the next, which is the most
+recognisable thing in an aerial photograph of farmland.
+
+**Juice**: rings snap out from placements, razing and fires, with three
+synthesised cues to match. Only deliberate one-off placements ring — dragging a
+street would fire twenty a second and read as a strobe. Plus a vignette, which
+costs nothing and stops the render reading as a flat rectangle of pixels.
+
 ## Telling the player what is happening
 
 Every zoned lot carries a stall reason — no frontage, no current, no demand,

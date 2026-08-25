@@ -75,12 +75,61 @@ let dayT = 0.36;            // 0 = midnight, 0.5 = noon
 let nightness = 0;
 let skyDrawn = -9;
 
+// A DOME, not a background quad. scene.background is drawn as a full-screen
+// image that does not turn with the camera — fine while the only camera was a
+// fixed isometric one, wrong the moment street level let you look around.
+const SKY_W = 1024, SKY_H = 256;
 const skyCv = document.createElement('canvas');
-skyCv.width = 4; skyCv.height = 256;
+skyCv.width = SKY_W; skyCv.height = SKY_H;
 const skyCtx = skyCv.getContext('2d');
 const skyTex = new THREE.CanvasTexture(skyCv);
 skyTex.colorSpace = THREE.SRGBColorSpace;
-scene.background = skyTex;
+skyTex.wrapS = THREE.RepeatWrapping;
+const skyDome = new THREE.Mesh(
+  new THREE.SphereGeometry(340, 40, 20),
+  new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false, depthWrite: false })
+);
+skyDome.renderOrder = -1;
+scene.add(skyDome);
+
+// Cloud banks and a starfield, both seeded so a given tract always has the same
+// sky. Drawn into the dome texture rather than as geometry: at this distance
+// nothing parallaxes anyway, and it costs one canvas instead of a particle set.
+const SKY_CLOUDS = (() => {
+  const r = S.mulberry32(0xc10d5), out = [];
+  for (let i = 0; i < 26; i++) {
+    out.push({ x: r() * SKY_W, y: 96 + r() * 96, w: 90 + r() * 240, h: 16 + r() * 30, a: 0.18 + r() * 0.34 });
+  }
+  return out;
+})();
+// Stars are POINTS, not texels. A 1px star painted into the dome texture is a
+// 15-pixel blob on screen, because that texture is stretched over a 340-unit
+// sphere; points are drawn at a real pixel size and stay stars.
+const starField = (() => {
+  const r = S.mulberry32(0x57a25), n = 700;
+  const pos = new Float32Array(n * 3), mag = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    // Upper hemisphere only, biased away from the horizon where haze eats them.
+    const u = r() * TAU, v = Math.pow(r(), 0.65);
+    const el = v * Math.PI * 0.46, rad = 320;
+    pos[i * 3] = Math.cos(u) * Math.cos(el) * rad;
+    pos[i * 3 + 1] = Math.sin(el) * rad;
+    pos[i * 3 + 2] = Math.sin(u) * Math.cos(el) * rad;
+    mag[i] = 0.30 + r() * 0.70;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('aMag', new THREE.Float32BufferAttribute(mag, 1));
+  const m = new THREE.PointsMaterial({
+    color: 0xfff8e4, size: 1.7, sizeAttenuation: false,
+    transparent: true, opacity: 0, depthWrite: false, fog: false,
+  });
+  const p = new THREE.Points(g, m);
+  p.renderOrder = -1;
+  p.frustumCulled = false;
+  scene.add(p);
+  return p;
+})();
 
 const SKY = {
   night: ['#151f2e', '#1f2d3d', '#2b3d4e'],
@@ -102,14 +151,54 @@ function skyStops(t) {
   return SKY.night.map((c, k) => mixHex(mixHex(c, SKY.dawn[k], dawnK), SKY.day[k], dayK));
 }
 function paintSky(force) {
-  if (!force && Math.abs(dayT - skyDrawn) < 0.012) return;
+  if (!force && Math.abs(dayT - skyDrawn) < 0.010) return;
   skyDrawn = dayT;
   const [a, b, c] = skyStops(dayT);
-  const g = skyCtx.createLinearGradient(0, 0, 0, 256);
-  g.addColorStop(0, a); g.addColorStop(0.55, b); g.addColorStop(1, c);
-  skyCtx.fillStyle = g; skyCtx.fillRect(0, 0, 4, 256);
+  // V runs zenith (0) to nadir (1) on the dome, so the HORIZON is V = 0.5.
+  // Spreading the three sky stops across the whole sphere put the horizon
+  // colour underground and left the visible band a flat wash.
+  const g = skyCtx.createLinearGradient(0, 0, 0, SKY_H);
+  g.addColorStop(0.00, a);
+  g.addColorStop(0.34, b);
+  g.addColorStop(0.50, c);
+  g.addColorStop(0.62, mixHex(c, '#5c5a4e', 0.55));   // haze under the horizon
+  g.addColorStop(1.00, mixHex(c, '#2e2f2a', 0.80));
+  skyCtx.fillStyle = g;
+  skyCtx.fillRect(0, 0, SKY_W, SKY_H);
+
+  const el = Math.sin((dayT - 0.25) * TAU);
+  const night = Math.min(1, Math.max(0, -el * 1.6 + 0.25));
+
+  starField.material.opacity = night * 0.92;
+
+  // The sun, low and orange near the horizon, small and pale overhead. Its
+  // position tracks the same azimuth that drives the shadows.
+  const sunX = ((dayT - 0.25) * SKY_W + SKY_W * 0.5) % SKY_W;
+  const sunY = SKY_H * (0.50 - Math.max(-0.12, el) * 0.45);
+  if (el > -0.18) {
+    const warm = el < 0.30;
+    const rad = skyCtx.createRadialGradient(sunX, sunY, 0, sunX, sunY, warm ? 96 : 58);
+    rad.addColorStop(0, warm ? 'rgba(255,206,140,0.92)' : 'rgba(255,250,232,0.80)');
+    rad.addColorStop(0.35, warm ? 'rgba(255,178,110,0.30)' : 'rgba(255,246,220,0.20)');
+    rad.addColorStop(1, 'rgba(255,190,130,0)');
+    skyCtx.fillStyle = rad;
+    skyCtx.fillRect(0, 0, SKY_W, SKY_H);
+  }
+
+  // Cloud, lit warm when the sun is low and grey-blue after dark.
+  const lit = Math.min(1, Math.max(0, el * 2.0 + 0.35));
+  for (const cl of SKY_CLOUDS) {
+    const tone = el < 0.28 && el > -0.2 ? [252, 216, 186] : [246, 248, 250];
+    const dim = 0.30 + lit * 0.70;
+    skyCtx.fillStyle = `rgba(${(tone[0] * dim) | 0},${(tone[1] * dim) | 0},${(tone[2] * dim) | 0},${(cl.a * (0.35 + lit * 0.65)).toFixed(3)})`;
+    for (const ox of [-SKY_W, 0, SKY_W]) {
+      skyCtx.beginPath();
+      skyCtx.ellipse(cl.x + ox, cl.y, cl.w * 0.5, cl.h * 0.5, 0, 0, TAU);
+      skyCtx.fill();
+    }
+  }
   skyTex.needsUpdate = true;
-  FOG.color.set(b);
+  FOG.color.set(c);          // distant ground has to fade into the HORIZON
 }
 function applyDaylight() {
   const el = Math.sin((dayT - 0.25) * TAU);
@@ -272,12 +361,13 @@ const fieldOf = (x, y) => FIELD[Math.min(FIELD.length - 1,
   (latAt(fieldLat, x / (W - 1), y / (H - 1)) * FIELD.length) | 0)];
 
 const PAL = {
-  water: ['#3c6b88', '#41708c', '#48789a', '#4d7fa0', '#457694', '#3f6d8a'],
+  water: ['#3c6b88', '#41708c', '#48789a'],
+  bed: ['#2f4a56', '#35525f', '#2a4450', '#334e5a'],
   shore: ['#a8a077', '#b0a880', '#9d956d'],
   tree: ['#4e6b41', '#587448', '#47623c'],
   road: { 1: '#7d6c50', 2: '#54524c', 3: '#5c5a53', 4: '#6b6157' },   // dirt/street/blvd/bridge
   roadLine: '#b9b29a', gravel: '#93815f', median: '#5f7c46', kerb: '#8e897c',
-  park: '#5d8348', parkPath: '#a89a76',
+  park: '#5d8348', parkPath: '#a89a76', hedge: '#4e6238',
   lot: { [Z.R]: '#9aa872', [Z.C]: '#7f96a8', [Z.I]: '#a89a72' },
   plant: '#6a6258', rubble: '#8a8074',
 };
@@ -290,7 +380,6 @@ const nearWater = (x, y) => {
   return false;
 };
 
-let waterPhase = 0;
 const rubble = new Map();      // tile -> seconds of dust left
 
 function paintTile(x, y) {
@@ -298,10 +387,11 @@ function paintTile(x, y) {
   const t = city.terrain[i], r = hash(i);
 
   if (t === T.WATER) {
-    // Bands stepping along the channel, not random flicker — flicker reads as
-    // a rendering fault, a moving band reads as current.
-    const k = ((x * 0.7 + y * 1.1 + waterPhase) | 0) % PAL.water.length;
-    g.fillStyle = PAL.water[(k + PAL.water.length) % PAL.water.length];
+    // The RIVERBED, not the river. The surface is its own mesh above this, so
+    // what gets painted here is silt seen through the water — and it no longer
+    // has to be repainted for animation, which used to re-upload the entire
+    // 640x640 ground texture three times a second.
+    g.fillStyle = PAL.bed[(hash(i) * PAL.bed.length) | 0];
     g.fillRect(px, py, GRES, GRES);
     return;
   }
@@ -310,6 +400,14 @@ function paintTile(x, y) {
     : t === T.TREE ? PAL.tree[(r * 3) | 0] : fieldOf(x, y)[(r * 3) | 0];
   g.fillStyle = bare;
   g.fillRect(px, py, GRES, GRES);
+  // A hedge where one field meets the next. Field boundaries are the single
+  // most recognisable thing in an aerial photograph of farmland, and without
+  // them the crop tones just bleed into one another.
+  if (t === T.LAND && !city.zone[i] && !city.road[i]) {
+    g.fillStyle = PAL.hedge;
+    if (x + 1 < W && fieldOf(x + 1, y) !== fieldOf(x, y)) g.fillRect(px + GRES - 1, py, 1, GRES);
+    if (y + 1 < H && fieldOf(x, y + 1) !== fieldOf(x, y)) g.fillRect(px, py + GRES - 1, GRES, 1);
+  }
   g.fillStyle = `rgba(255,246,214,${0.05 + Math.min(1, city.elev[i] * 1.7) * 0.10})`;
   g.fillRect(px, py, GRES, GRES);
 
@@ -384,7 +482,6 @@ function paintTile(x, y) {
 }
 
 const dirtyTiles = new Set();
-let waterTiles = [];
 function touch(x, y) {
   for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
     const nx = x + dx, ny = y + dy;
@@ -437,6 +534,45 @@ const detailTex = (() => {
   return t;
 })();
 
+// The tract is 160 tiles and the county is not. Without this the map ends in a
+// hard diamond with sky under it, which no amount of haze disguises.
+const outland = (() => {
+  // A FRAME, not a sheet. A single plane across the whole map sits above the
+  // river bed and paints straight over the water — the tract has to be left
+  // alone and only the country beyond it drawn.
+  const EXT = W * 3;
+  const quad = (x0, z0, x1, z1) => {
+    const g = new THREE.PlaneGeometry(x1 - x0, z1 - z0);
+    g.rotateX(-Math.PI / 2);
+    g.translate((x0 + x1) / 2 - W / 2, 0, (z0 + z1) / 2 - H / 2);
+    return g;
+  };
+  const g = mergeGeos([
+    quad(-EXT, -EXT, W + EXT, 0),          // north of the tract
+    quad(-EXT, H, W + EXT, H + EXT),       // south
+    quad(-EXT, 0, 0, H),                   // west
+    quad(W, 0, W + EXT, H),                // east
+  ]);
+  const m = new THREE.MeshLambertMaterial({ color: 0x7c8a5c });
+  m.onBeforeCompile = sh => {
+    sh.uniforms.uDetail2 = { value: detailTex };
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform sampler2D uDetail2;\nvarying vec3 vOutPos;')
+      .replace('#include <color_fragment>',
+        '#include <color_fragment>\n'
+        + 'float d2 = texture2D( uDetail2, vOutPos.xz * 0.09 ).r;\n'
+        + 'diffuseColor.rgb *= 0.74 + 0.32 * d2;');
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vOutPos;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvOutPos = position;');
+  };
+  const mesh = new THREE.Mesh(g, m);
+  mesh.position.set(W / 2, 0.34, H / 2);
+  mesh.renderOrder = -1;
+  scene.add(mesh);
+  return mesh;
+})();
+
 const groundGeo = new THREE.PlaneGeometry(W, H, W, H);
 groundGeo.rotateX(-Math.PI / 2);
 const groundMat = new THREE.MeshLambertMaterial({ map: gTex.tex });
@@ -464,6 +600,90 @@ function reshapeGround() {
     pos.setY(vy * (W + 1) + vx, cornerH(vx, vy));
   pos.needsUpdate = true;
   groundGeo.computeVertexNormals();
+}
+
+// ----------------------------------------------------------------- the river
+// A real surface rather than bands painted into the ground texture. Depth is
+// baked per vertex from the distance to the nearest bank, which drives both the
+// colour and the transparency — shallow water shows the silt, deep water does
+// not, and that gradient is most of what makes a river read as water.
+const waterMat = new THREE.MeshLambertMaterial({
+  color: 0x4d86a8, transparent: true, opacity: 0.94, depthWrite: false,
+});
+waterMat.onBeforeCompile = sh => {
+  sh.uniforms.uTime = { value: 0 };
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>',
+      '#include <common>\nattribute float aDepth;\nvarying float vDepth;\nvarying vec3 vWPos;')
+    .replace('#include <begin_vertex>',
+      '#include <begin_vertex>\nvDepth = aDepth;\nvWPos = (modelMatrix * vec4(transformed,1.0)).xyz;');
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>',
+      '#include <common>\nuniform float uTime;\nvarying float vDepth;\nvarying vec3 vWPos;')
+    .replace('#include <color_fragment>', `#include <color_fragment>
+      // Three drifting wave trains at different angles and speeds. One alone
+      // reads as a moving stripe; three interfere and read as a surface.
+      float w1 = sin(vWPos.x * 3.1 + vWPos.z * 1.7 + uTime * 1.10);
+      float w2 = sin(vWPos.x * -1.9 + vWPos.z * 4.3 + uTime * 1.55);
+      float w3 = sin((vWPos.x + vWPos.z) * 8.7 - uTime * 2.30);
+      float ripple = w1 * 0.42 + w2 * 0.36 + w3 * 0.22;
+      vec3 shallow = vec3(0.42, 0.56, 0.55);
+      vec3 deep    = vec3(0.14, 0.30, 0.44);
+      diffuseColor.rgb = mix(shallow, deep, clamp(vDepth, 0.0, 1.0));
+      // Glints ride the crests only, so the sparkle moves with the water.
+      float crest = smoothstep(0.55, 0.95, ripple);
+      diffuseColor.rgb += crest * 0.30;
+      diffuseColor.rgb *= 0.94 + ripple * 0.06;
+      diffuseColor.a *= mix(0.42, 0.97, clamp(vDepth, 0.0, 1.0));`);
+  waterMat.userData.shader = sh;
+};
+
+let waterMesh = null;
+const WATER_Y = -0.04;
+function buildWater() {
+  if (waterMesh) { scene.remove(waterMesh); waterMesh.geometry.dispose(); waterMesh = null; }
+  // Distance to the nearest bank, by BFS out from every dry tile.
+  const dist = new Int16Array(N).fill(-1);
+  let frontier = [];
+  for (let i = 0; i < N; i++) if (city.terrain[i] !== T.WATER) { dist[i] = 0; frontier.push(i); }
+  for (let step = 1; step <= 7 && frontier.length; step++) {
+    const next = [];
+    for (const i of frontier) {
+      const x = i % W, y = (i / W) | 0;
+      for (let k = 0; k < 4; k++) {
+        const nx = x + (k === 0 ? 1 : k === 1 ? -1 : 0), ny = y + (k === 2 ? 1 : k === 3 ? -1 : 0);
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const j = idx(nx, ny);
+        if (dist[j] !== -1) continue;
+        dist[j] = step; next.push(j);
+      }
+    }
+    frontier = next;
+  }
+
+  const pos = [], nrm = [], dep = [], ind = [];
+  let v = 0;
+  const depthAt = i => Math.min(1, Math.max(0, (dist[i] < 0 ? 7 : dist[i]) / 4.5));
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = idx(x, y);
+    if (city.terrain[i] !== T.WATER) continue;
+    if (city.road[i] === S.ROAD.BRIDGE) continue;      // the deck covers it
+    const d = depthAt(i);
+    pos.push(x, WATER_Y, y, x + 1, WATER_Y, y, x + 1, WATER_Y, y + 1, x, WATER_Y, y + 1);
+    for (let k = 0; k < 4; k++) { nrm.push(0, 1, 0); dep.push(d); }
+    ind.push(v, v + 2, v + 1, v, v + 3, v + 2);
+    v += 4;
+  }
+  if (!v) return;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  g.setAttribute('aDepth', new THREE.Float32BufferAttribute(dep, 1));
+  g.setIndex(ind);
+  waterMesh = new THREE.Mesh(g, waterMat);
+  waterMesh.renderOrder = 1;
+  waterMesh.receiveShadow = true;
+  scene.add(waterMesh);
 }
 
 // ------------------------------------------------------------ survey sheets
@@ -980,31 +1200,64 @@ const shedMesh = (() => {
 const SHED_TINT = ['#9c8f79', '#8a7f6b', '#a8997f', '#7d7362'];
 
 // -------------------------------------------------------------------- trees
-const treeMesh = (() => {
-  const geo = new THREE.ConeGeometry(0.34, 0.9, 5);
-  geo.translate(0, 0.45, 0);
-  const m = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial(), 12000);
-  m.castShadow = true; m.frustumCulled = false; m.count = 0;
+// Three kinds of tree, each with a trunk. One cone repeated ten thousand times
+// is a Christmas-tree farm, not a wood — and the trunk is what stops the canopy
+// looking like it is resting on the grass.
+const TREE_GEO = [
+  // spruce: stacked cones, narrow
+  () => mergeGeos([
+    box(.055, .17, .055),
+    (() => { const g = new THREE.ConeGeometry(.34, .62, 6); g.translate(0, .17 + .31, 0); return g; })(),
+    (() => { const g = new THREE.ConeGeometry(.23, .40, 6); g.translate(0, .17 + .58, 0); return g; })(),
+  ]),
+  // broadleaf: a round crown on a taller trunk
+  () => mergeGeos([
+    box(.07, .30, .07),
+    (() => { const g = new THREE.IcosahedronGeometry(.34, 0); g.scale(1, .86, 1); g.translate(0, .30 + .27, 0); return g; })(),
+  ]),
+  // scrub: low and wide
+  () => mergeGeos([
+    box(.05, .09, .05),
+    (() => { const g = new THREE.IcosahedronGeometry(.26, 0); g.scale(1.15, .62, 1.15); g.translate(0, .09 + .14, 0); return g; })(),
+  ]),
+];
+const TREE_TINT = [
+  ['#41603a', '#48693f', '#3a5734'],   // spruce, cool
+  ['#5b7a41', '#65834a', '#547038'],   // broadleaf, warmer
+  ['#6b7d48', '#74864f', '#5f7141'],
+];
+const treeMeshes = TREE_GEO.map(make => {
+  const m = new THREE.InstancedMesh(make(), new THREE.MeshLambertMaterial(), 9000);
+  m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false; m.count = 0;
   scene.add(m);
   return m;
-})();
+});
 function rebuildTrees() {
-  let k = 0;
+  const n = [0, 0, 0];
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const i = idx(x, y);
-    if (city.terrain[i] !== T.TREE || k >= 12000) continue;
-    const r = hash(i), s = 0.7 + r * 0.7;
-    _v.set(x + 0.2 + r * 0.6, padH(x, y), y + 0.2 + hash(i + 7) * 0.6);
-    _q.setFromAxisAngle(YAXIS, r * 6.28);
-    _m.compose(_v, _q, new THREE.Vector3(s, 0.8 + r * 0.6, s));
-    treeMesh.setMatrixAt(k, _m);
-    _col.set(PAL.tree[(r * 3) | 0]).offsetHSL(0, 0, (hash(i + 3) - 0.5) * 0.10);
-    treeMesh.setColorAt(k, _col);
-    k++;
+    if (city.terrain[i] !== T.TREE) continue;
+    const r = hash(i), r2 = hash(i + 7), r3 = hash(i + 11);
+    // Spruce on the high ground, broadleaf low, scrub scattered through.
+    const high = city.elev[i] > 2.2;
+    const k = r3 < 0.14 ? 2 : (high ? (r3 < 0.72 ? 0 : 1) : (r3 < 0.45 ? 0 : 1));
+    const m = treeMeshes[k];
+    if (n[k] >= 9000) continue;
+    const sc = 0.72 + r * 0.62;
+    _v.set(x + 0.18 + r * 0.64, padH(x, y), y + 0.18 + r2 * 0.64);
+    _q.setFromAxisAngle(YAXIS, r * TAU);
+    _m.compose(_v, _q, new THREE.Vector3(sc, sc * (0.82 + r2 * 0.46), sc));
+    m.setMatrixAt(n[k], _m);
+    const pal = TREE_TINT[k];
+    _col.set(pal[(r * 3) | 0]).offsetHSL((hash(i + 5) - 0.5) * 0.03, 0, (hash(i + 3) - 0.5) * 0.13);
+    m.setColorAt(n[k], _col);
+    n[k]++;
   }
-  treeMesh.count = k;
-  treeMesh.instanceMatrix.needsUpdate = true;
-  if (treeMesh.instanceColor) treeMesh.instanceColor.needsUpdate = true;
+  treeMeshes.forEach((m, k) => {
+    m.count = n[k];
+    m.instanceMatrix.needsUpdate = true;
+    if (m.instanceColor) m.instanceColor.needsUpdate = true;
+  });
 }
 
 // ------------------------------------------------------------------ traffic
@@ -1321,6 +1574,49 @@ function stepSmoke(dt) {
   }
 }
 
+// -------------------------------------------------------------------- juice
+// Rings that snap out from wherever something happened. Placement in a builder
+// is a hundred small actions and none of them acknowledged anything.
+const PULSE_MAX = 24;
+const pulseGeo = new THREE.RingGeometry(0.30, 0.44, 20);
+pulseGeo.rotateX(-Math.PI / 2);
+const pulseMat = new THREE.MeshBasicMaterial({
+  color: 0xfff0c4, transparent: true, opacity: 0.9, depthWrite: false, depthTest: false, side: THREE.DoubleSide,
+});
+const pulseMesh = new THREE.InstancedMesh(pulseGeo, pulseMat, PULSE_MAX);
+pulseMesh.frustumCulled = false; pulseMesh.count = 0; pulseMesh.renderOrder = 6;
+scene.add(pulseMesh);
+const pulses = [];
+function pulseAt(x, y, colour) {
+  if (pulses.length >= PULSE_MAX) pulses.shift();
+  pulses.push({ x, y, t: 0, col: colour || 0xfff0c4 });
+}
+function stepPulses(dt) {
+  let k = 0;
+  for (let n = pulses.length - 1; n >= 0; n--) {
+    const p = pulses[n];
+    p.t += dt / 0.45;
+    if (p.t >= 1) { pulses.splice(n, 1); continue; }
+  }
+  for (const p of pulses) {
+    const e = 1 - Math.pow(1 - p.t, 2);
+    const sc = 0.55 + e * 1.5;
+    _q.setFromAxisAngle(YAXIS, 0);
+    _v.set(p.x + 0.5, padH(p.x, p.y) + 0.08, p.y + 0.5);
+    _sc.set(sc, 1, sc);
+    _m.compose(_v, _q, _sc);
+    pulseMesh.setMatrixAt(k, _m);
+    _col.setHex(p.col).multiplyScalar(1 - p.t);
+    pulseMesh.setColorAt(k, _col);
+    k++;
+  }
+  pulseMesh.count = k;
+  if (k) {
+    pulseMesh.instanceMatrix.needsUpdate = true;
+    if (pulseMesh.instanceColor) pulseMesh.instanceColor.needsUpdate = true;
+  }
+}
+
 // ------------------------------------------------------------------ cursor
 const cursor = new THREE.Mesh(
   new THREE.BoxGeometry(1, 0.06, 1),
@@ -1361,14 +1657,13 @@ function applyWorld() {
   reshapeGround();
   paintAll();
   computeFarmSites();
+  buildWater();
   seedFlocks();
   peds.length = 0;
   rebuildBridges();
   rebuildTrees();
   rebuildPlants();
   rebuildBuildings();
-  waterTiles = [];
-  for (let i = 0; i < N; i++) if (city.terrain[i] === T.WATER) waterTiles.push(i);
   if (ovrMode !== 'none') paintOverlay();
 }
 
@@ -1806,7 +2101,7 @@ function apply(x, y) {
     case 'dirt': did = S.setRoad(city, x, y, S.ROAD.DIRT); break;
     case 'street': did = S.setRoad(city, x, y, S.ROAD.STREET); break;
     case 'boulevard': did = S.setRoad(city, x, y, S.ROAD.BOULEVARD); break;
-    case 'bridge': did = S.setRoad(city, x, y, S.ROAD.BRIDGE); if (did) rebuildBridges(); break;
+    case 'bridge': did = S.setRoad(city, x, y, S.ROAD.BRIDGE); if (did) { rebuildBridges(); buildWater(); } break;
     case 'school': did = S.placeService(city, x, y, S.SVC.SCHOOL); break;
     case 'fire': did = S.placeService(city, x, y, S.SVC.FIRE); break;
     case 'police': did = S.placeService(city, x, y, S.SVC.POLICE); break;
@@ -1822,9 +2117,15 @@ function apply(x, y) {
     case 'oil': did = S.placePlant(city, x, y, 'oil'); break;
   }
   if (!did) return false;
+  // Only the deliberate, one-off placements get a ring — dragging a street
+  // would otherwise fire twenty a second and read as a strobe.
+  if (tool === 'bulldoze') { pulseAt(x, y, 0xd8503c); audio.thud(); }
+  else if (!ROAD_TOOLS[tool] && tool !== 'line' && !tool.startsWith('zone')) {
+    pulseAt(x, y, 0xfff0c4); audio.chime();
+  } else if (!painting) audio.tick();
   touch(x, y);
   if (tool === 'coal' || tool === 'oil') { touch(x + 1, y); touch(x, y + 1); touch(x + 1, y + 1); rebuildPlants(); }
-  if (tool === 'bulldoze') { rebuildPlants(); rebuildBridges(); }
+  if (tool === 'bulldoze') { rebuildPlants(); rebuildBridges(); buildWater(); }
   prevBld[idx(x, y)] = city.bld[idx(x, y)];
   bldDirty = true;
   return true;
@@ -1960,6 +2261,7 @@ function noteFires() {
     const d = S.districtAt(city, f.i);
     rubble.set(f.i, RUBBLE_SEC * 2);
     touch(f.i % W, (f.i / W) | 0);
+    pulseAt(f.i % W, (f.i / W) | 0, 0xff7a3c);
     if (playing) bulletin('Fire', d ? `A block burned in ${d.name}. No station in reach.`
       : 'A block burned. No station in reach.');
   }
@@ -2081,7 +2383,7 @@ $('btnQuit').onclick = () => {
 };
 
 // --------------------------------------------------------------------- loop
-let last = performance.now(), acc = 0, hudAcc = 0, autosaveAcc = 0, waterAcc = 0;
+let last = performance.now(), acc = 0, hudAcc = 0, autosaveAcc = 0;
 function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.25, (now - last) / 1000); last = now;
@@ -2140,6 +2442,10 @@ function frame(now) {
     cloudPlane.visible = !!SET.haze;
     cloudPlane.position.set(view.cx, 14, view.cz);
   }
+  const camNow = activeCam();
+  skyDome.position.copy(camNow.position);
+  starField.position.copy(camNow.position);
+  skyTex.offset.x = (skyTex.offset.x + dt * 0.0016) % 1;   // the weather drifts
   cloudTex.offset.x = (cloudTex.offset.x + dt * 0.0055) % 1;
   cloudTex.offset.y = (cloudTex.offset.y + dt * 0.0026) % 1;
 
@@ -2157,13 +2463,10 @@ function frame(now) {
     }
   }
 
-  waterAcc += dt;
-  if (waterAcc > 0.28 && waterTiles.length) {
-    waterAcc = 0; waterPhase += 1;
-    for (const i of waterTiles) dirtyTiles.add(i);
-  }
+  if (waterMat.userData.shader) waterMat.userData.shader.uniforms.uTime.value = now / 1000;
 
   stepRubble(dt);
+  stepPulses(dt);
   stepSmoke(dt);
   stepBirds(dt, now / 1000);
   if (active) { stepTraffic(dt); stepPeds(dt); }
